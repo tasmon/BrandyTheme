@@ -1,4 +1,4 @@
-# BrandyTheme 1.3.0
+# BrandyTheme 1.3.1
 
 Brand themes for Windows 10 and 11: wallpaper, lock screen, accent colour and icon sets for 40 brands
 (HP, Lenovo, Samsung, Intel, AMD, Ryzen, Dell, ASUS, Acer, MSI, Microsoft, Apple, NVIDIA, GeForce, Radeon,
