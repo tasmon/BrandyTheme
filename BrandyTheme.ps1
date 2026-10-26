@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.2.0'
+$script:AppVersion  = '1.3.0'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -41,8 +41,7 @@ $script:DataDir      = Join-Path $env:ProgramData 'BrandyTheme'
 $script:StatePath    = Join-Path $script:DataDir 'state.json'
 $script:SettingsPath = Join-Path $script:DataDir 'settings.json'
 $script:IconPath     = Join-Path $script:DataDir 'BrandyTheme.ico'
-$script:txtLog       = $null
-$script:lblStatus    = $null
+$script:txtStatus    = $null
 $script:LogLines     = New-Object 'System.Collections.Generic.List[string]'
 
 foreach ($d in @($script:DataDir)) {
@@ -492,15 +491,23 @@ function New-BrandIconBitmap {
 function New-AppIconBitmap([int]$Size = 256) {
     $bmp = New-Object System.Drawing.Bitmap($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'AntiAliasGridFit'
+    $g.SmoothingMode = 'AntiAlias'
     $g.ScaleTransform($Size / 256.0, $Size / 256.0)
-    $gb = New-Object System.Drawing.Drawing2D.LinearGradientBrush([System.Drawing.PointF]::new(0, 0), [System.Drawing.PointF]::new(256, 256),
-        (ConvertTo-Color '#0071C5'), (ConvertTo-Color '#F26B21'))
-    $g.FillPath($gb, (New-RoundRect 8 8 240 240 52))
-    $font = New-Object System.Drawing.Font('Segoe UI', 150, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $fmt = New-Object System.Drawing.StringFormat
-    $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
-    $g.DrawString('B', $font, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 8, 256, 256)), $fmt)
+    $PF = [System.Drawing.PointF]
+    $gb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($PF::new(20, 0), $PF::new(236, 256), (ConvertTo-Color '#4C8DFF'), (ConvertTo-Color '#8B5CF6'))
+    $g.FillPath($gb, (New-RoundRect 6 6 244 244 58))
+    $gb.Dispose()
+    # three stacked layers = "theme"
+    $layer2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(115, 255, 255, 255), 16)
+    $layer1 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(205, 255, 255, 255), 16)
+    foreach ($p in $layer1, $layer2) { $p.StartCap = 'Round'; $p.EndCap = 'Round'; $p.LineJoin = 'Round' }
+    $g.DrawLines($layer2, (New-Pts 56, 168, 128, 206, 200, 168))
+    $g.DrawLines($layer1, (New-Pts 56, 136, 128, 174, 200, 136))
+    $top = New-Pts 128, 50, 204, 92, 128, 134, 52, 92
+    $g.FillPolygon([System.Drawing.Brushes]::White, $top)
+    $edge = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 12); $edge.LineJoin = 'Round'
+    $g.DrawPolygon($edge, $top)
+    $layer1.Dispose(); $layer2.Dispose(); $edge.Dispose()
     $g.Dispose()
     $bmp
 }
@@ -595,10 +602,9 @@ try {
 
 # ------------------------------------------------------------------ logging, settings, state
 function Write-Log([string]$Message) {
-    $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message
-    $script:LogLines.Add($line)
-    if ($script:lblStatus) { $script:lblStatus.Text = $Message; [System.Windows.Forms.Application]::DoEvents() }
-    elseif (-not $script:txtLog) { Write-Host $line }
+    $script:LogLines.Add(("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message))
+    if ($script:txtStatus) { $script:txtStatus.Text = $Message; Update-UI }
+    else { Write-Host $Message }
 }
 
 function Read-Settings {
@@ -834,6 +840,310 @@ function Restore-All {
 # headless restore (used by the uninstaller)
 if ($RestoreDefaults) { Restore-All; exit 0 }
 
+# ------------------------------------------------------------------ WPF (modern UI)
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+function ConvertTo-BitmapSource($Bitmap) {
+    $ms = New-Object System.IO.MemoryStream
+    $Bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    $ms.Position = 0
+    $bi = New-Object System.Windows.Media.Imaging.BitmapImage
+    $bi.BeginInit(); $bi.CacheOption = 'OnLoad'; $bi.StreamSource = $ms; $bi.EndInit(); $bi.Freeze()
+    $ms.Dispose()
+    $bi
+}
+
+function ConvertTo-MediaColor([System.Drawing.Color]$C) { [System.Windows.Media.Color]::FromRgb($C.R, $C.G, $C.B) }
+
+# let the UI repaint during long operations
+function Update-UI {
+    try {
+        $frame = New-Object System.Windows.Threading.DispatcherFrame
+        $script:CurFrame = $frame
+        [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Background,
+            [System.Windows.Threading.DispatcherOperationCallback]{ param($o) $script:CurFrame.Continue = $false; $null }, $null)
+        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+    } catch { }
+}
+
+# dark title bar that blends into the window
+function Set-WpfChrome($Win) {
+    $Win.Add_SourceInitialized({
+        param($s, $e)
+        try {
+            $h = (New-Object System.Windows.Interop.WindowInteropHelper($s)).Handle
+            $v = 1;        [void][BrandyNative]::DwmSetWindowAttribute($h, 20, [ref]$v, 4)   # dark mode
+            $cap = 0x120D0B; [void][BrandyNative]::DwmSetWindowAttribute($h, 35, [ref]$cap, 4) # caption colour (Win11)
+            $txt = 0xF8F4F2; [void][BrandyNative]::DwmSetWindowAttribute($h, 36, [ref]$txt, 4) # caption text (Win11)
+        } catch { }
+    })
+}
+
+$script:ResXaml = @'
+<SolidColorBrush x:Key="Bg" Color="#0B0D12"/>
+<SolidColorBrush x:Key="Side" Color="#0F121A"/>
+<SolidColorBrush x:Key="Card" Color="#151922"/>
+<SolidColorBrush x:Key="Card2" Color="#1D222D"/>
+<SolidColorBrush x:Key="Stroke" Color="#232835"/>
+<SolidColorBrush x:Key="Text" Color="#F2F4F8"/>
+<SolidColorBrush x:Key="Sub" Color="#8E96A8"/>
+<Color x:Key="AccentColor">#3B82F6</Color>
+<SolidColorBrush x:Key="Accent" Color="#3B82F6"/>
+<SolidColorBrush x:Key="AccentFg" Color="#FFFFFF"/>
+<FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+
+<Style x:Key="Solid" TargetType="Button">
+  <Setter Property="Foreground" Value="{DynamicResource AccentFg}"/>
+  <Setter Property="FontSize" Value="15"/><Setter Property="FontWeight" Value="SemiBold"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="Bd" Background="{DynamicResource Accent}" CornerRadius="14" Padding="22,0">
+      <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.88"/></Trigger>
+      <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.74"/></Trigger>
+      <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Bd" Property="Opacity" Value="0.4"/></Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="Soft" TargetType="Button">
+  <Setter Property="Foreground" Value="{StaticResource Text}"/>
+  <Setter Property="FontSize" Value="14"/><Setter Property="FontWeight" Value="SemiBold"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="HorizontalContentAlignment" Value="Center"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="Bd" Background="{StaticResource Card2}" CornerRadius="14" Padding="20,0">
+      <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#283040"/></Trigger>
+      <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Background" Value="#313A4D"/></Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="Ghost" TargetType="Button">
+  <Setter Property="Foreground" Value="{StaticResource Text}"/>
+  <Setter Property="FontSize" Value="14"/><Setter Property="Padding" Value="14,0"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="HorizontalContentAlignment" Value="Center"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="Bd" Background="Transparent" CornerRadius="10" Padding="{TemplateBinding Padding}">
+      <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{StaticResource Card2}"/></Trigger>
+      <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Background" Value="#283040"/></Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="IconBtn" TargetType="Button" BasedOn="{StaticResource Ghost}">
+  <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
+  <Setter Property="FontSize" Value="16"/><Setter Property="Padding" Value="0"/>
+  <Setter Property="Width" Value="38"/><Setter Property="Height" Value="38"/>
+</Style>
+
+<Style x:Key="Round" TargetType="Button">
+  <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
+  <Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="White"/>
+  <Setter Property="Width" Value="36"/><Setter Property="Height" Value="36"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="Bd" Background="#8C000000" CornerRadius="18">
+      <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#D9000000"/></Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="Switch" TargetType="ToggleButton">
+  <Setter Property="Foreground" Value="{StaticResource Text}"/>
+  <Setter Property="FontSize" Value="14"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+    <StackPanel Orientation="Horizontal" Background="Transparent">
+      <Grid Width="40" Height="22" VerticalAlignment="Center">
+        <Border x:Name="Track" CornerRadius="11" Background="#2C3340"/>
+        <Ellipse x:Name="Thumb" Width="16" Height="16" Fill="#C5CBD8" HorizontalAlignment="Left" Margin="3,0,0,0"/>
+      </Grid>
+      <ContentPresenter Margin="12,0,0,0" VerticalAlignment="Center"/>
+    </StackPanel>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsChecked" Value="True">
+        <Setter TargetName="Track" Property="Background" Value="{DynamicResource Accent}"/>
+        <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
+        <Setter TargetName="Thumb" Property="Margin" Value="0,0,3,0"/>
+        <Setter TargetName="Thumb" Property="Fill" Value="{DynamicResource AccentFg}"/>
+      </Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="Search" TargetType="TextBox">
+  <Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="CaretBrush" Value="{StaticResource Text}"/>
+  <Setter Property="FontSize" Value="14"/><Setter Property="Height" Value="42"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
+    <Border x:Name="Bd" Background="{StaticResource Card}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="12">
+      <Grid>
+        <TextBlock x:Name="Hint" Text="Search brands" Foreground="{StaticResource Sub}" Margin="14,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/>
+        <ScrollViewer x:Name="PART_ContentHost" Margin="12,0" VerticalAlignment="Center"/>
+      </Grid>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="Text" Value=""><Setter TargetName="Hint" Property="Visibility" Value="Visible"/></Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style x:Key="BrandItem" TargetType="ListBoxItem">
+  <Setter Property="Padding" Value="10,0"/><Setter Property="Margin" Value="0,1"/>
+  <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+    <Grid>
+      <Border x:Name="Bd" CornerRadius="12" Background="Transparent"/>
+      <Border x:Name="Bar" Width="3" Height="22" CornerRadius="2" HorizontalAlignment="Left" Margin="1,0,0,0" Background="{DynamicResource Accent}" Visibility="Collapsed"/>
+      <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+    </Grid>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#151922"/></Trigger>
+      <Trigger Property="IsSelected" Value="True">
+        <Setter TargetName="Bd" Property="Background" Value="#1D222D"/>
+        <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
+      </Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+
+<Style TargetType="ListBox">
+  <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+  <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+  <Setter Property="Foreground" Value="{StaticResource Text}"/>
+</Style>
+
+<Style TargetType="ScrollBar">
+  <Setter Property="Width" Value="8"/><Setter Property="Background" Value="Transparent"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
+    <Track x:Name="PART_Track" IsDirectionReversed="True">
+      <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/></Track.DecreaseRepeatButton>
+      <Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType="Thumb"><Border CornerRadius="4" Background="#363D4D" Margin="1"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+      <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/></Track.IncreaseRepeatButton>
+    </Track>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
+'@
+
+$script:WinHead = @'
+xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="14" UseLayoutRounding="True" SnapsToDevicePixels="True"
+TextOptions.TextRenderingMode="ClearType"
+'@
+
+function ConvertFrom-Xaml([string]$Xaml) {
+    [System.Windows.Markup.XamlReader]::Parse($Xaml.Replace('{{RES}}', $script:ResXaml).Replace('{{HEAD}}', $script:WinHead))
+}
+
+# ------------------------------------------------------------------ dialogs
+$script:DialogXaml = @'
+<Window {{HEAD}} Title="BrandyTheme" Width="440" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+  <Window.Resources>{{RES}}</Window.Resources>
+  <Grid Margin="30,28,30,24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel>
+      <TextBlock x:Name="T" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap"/>
+      <TextBlock x:Name="M" FontSize="14" Foreground="#AAB2C3" TextWrapping="Wrap" Margin="0,10,0,0" LineHeight="21"/>
+    </StackPanel>
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0">
+      <Button x:Name="B2" Style="{StaticResource Soft}" Height="40" MinWidth="96" Margin="0,0,10,0"/>
+      <Button x:Name="B1" Style="{StaticResource Solid}" Height="40" MinWidth="96"/>
+    </StackPanel>
+  </Grid>
+</Window>
+'@
+
+function Show-Dialog {
+    param([string]$Title, [string]$Message, [string]$Primary = 'OK', [string]$Secondary = '')
+    $w = ConvertFrom-Xaml $script:DialogXaml
+    Set-WpfChrome $w
+    $w.FindName('T').Text = $Title
+    $w.FindName('M').Text = $Message
+    $b1 = $w.FindName('B1'); $b2 = $w.FindName('B2')
+    $b1.Content = $Primary
+    if ($Secondary) { $b2.Content = $Secondary } else { $b2.Visibility = 'Collapsed' }
+    $b1.Add_Click({ $w.DialogResult = $true }.GetNewClosure())
+    $b2.Add_Click({ $w.DialogResult = $false }.GetNewClosure())
+    if ($script:win -and $script:win.IsVisible) { $w.Owner = $script:win }
+    $r = $w.ShowDialog()
+    return ($r -eq $true)
+}
+
+$script:AboutXaml = @'
+<Window {{HEAD}} Title="About BrandyTheme" Width="440" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+  <Window.Resources>{{RES}}</Window.Resources>
+  <StackPanel Margin="34,32,34,26">
+    <StackPanel Orientation="Horizontal">
+      <Image x:Name="Logo" Width="68" Height="68"/>
+      <StackPanel Margin="18,0,0,0" VerticalAlignment="Center">
+        <TextBlock Text="BrandyTheme" FontSize="26" FontWeight="SemiBold"/>
+        <TextBlock x:Name="Ver" Foreground="{StaticResource Sub}" FontSize="13" Margin="0,2,0,0"/>
+      </StackPanel>
+    </StackPanel>
+    <Border Height="1" Background="{StaticResource Stroke}" Margin="0,24,0,20"/>
+    <TextBlock Text="Created by" Foreground="{StaticResource Sub}" FontSize="12"/>
+    <TextBlock x:Name="Author" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,14"/>
+    <TextBlock Text="Contact" Foreground="{StaticResource Sub}" FontSize="12"/>
+    <TextBlock x:Name="MailLink" FontSize="14" Foreground="#6EA8FF" Cursor="Hand" Margin="0,2,0,14"/>
+    <TextBlock Text="GitHub" Foreground="{StaticResource Sub}" FontSize="12"/>
+    <TextBlock x:Name="WebLink" FontSize="14" Foreground="#6EA8FF" Cursor="Hand" Margin="0,2,0,0"/>
+    <TextBlock Text="Brand names are trademarks of their respective owners. BrandyTheme is independent and not affiliated with them."
+               Foreground="{StaticResource Sub}" FontSize="12" TextWrapping="Wrap" Margin="0,22,0,0" LineHeight="18"/>
+    <Button x:Name="CloseBtn" Style="{StaticResource Solid}" Content="Close" Height="40" Width="110" HorizontalAlignment="Right" Margin="0,22,0,0"/>
+  </StackPanel>
+</Window>
+'@
+
+function Show-About {
+    $w = ConvertFrom-Xaml $script:AboutXaml
+    Set-WpfChrome $w
+    $bmp = New-AppIconBitmap 256; $w.FindName('Logo').Source = ConvertTo-BitmapSource $bmp; $bmp.Dispose()
+    $w.FindName('Ver').Text = "Version $($script:AppVersion)"
+    $w.FindName('Author').Text = $script:Author
+    $mail = $w.FindName('MailLink'); $mail.Text = $script:Email
+    $web  = $w.FindName('WebLink');  $web.Text = $script:GitHubUrl.Replace('https://', '')
+    $mail.Add_MouseLeftButtonUp({ Start-Process "mailto:$($script:Email)" })
+    $web.Add_MouseLeftButtonUp({ Start-Process $script:GitHubUrl })
+    $w.FindName('CloseBtn').Add_Click({ $w.Close() }.GetNewClosure())
+    if ($script:win -and $script:win.IsVisible) { $w.Owner = $script:win }
+    [void]$w.ShowDialog()
+}
+
+$script:LogXaml = @'
+<Window {{HEAD}} Title="Activity log" Width="620" Height="400" ShowInTaskbar="False" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+  <Window.Resources>{{RES}}</Window.Resources>
+  <Border Margin="16" Background="{StaticResource Card}" CornerRadius="14" Padding="14">
+    <TextBox x:Name="Box" IsReadOnly="True" Background="Transparent" BorderThickness="0" Foreground="#C9D1E0"
+             FontFamily="Cascadia Mono, Consolas" FontSize="13" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+  </Border>
+</Window>
+'@
+
+function Show-LogViewer {
+    $w = ConvertFrom-Xaml $script:LogXaml
+    Set-WpfChrome $w
+    $w.FindName('Box').Text = ($script:LogLines -join "`r`n")
+    if ($script:win -and $script:win.IsVisible) { $w.Owner = $script:win }
+    [void]$w.ShowDialog()
+}
+
 # ------------------------------------------------------------------ auto-update (simple version.txt)
 # In the GitHub repo (main branch):
 #   version.txt      first line = latest version, e.g.  1.2.0   (optional 2nd line = SHA-256 of BrandyTheme.ps1)
@@ -893,128 +1203,69 @@ else { Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPo
     Write-Log 'Restarting to finish the update...'
     $argStr = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$updater`" -ProcId $PID -Source `"$file`" -Target `"$($script:AppRoot)`""
     Start-Process -FilePath powershell.exe -ArgumentList $argStr -WindowStyle Hidden
-    $script:form.Close()
+    $script:win.Close()
 }
 
 function Invoke-UpdateCheck([bool]$Silent) {
     try {
-        $script:form.Cursor = 'WaitCursor'
+        [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
         $remote = Get-RemoteVersion
         $local = [version]$script:AppVersion
+        [System.Windows.Input.Mouse]::OverrideCursor = $null
         if ($remote.Version -gt $local) {
-            $answer = [System.Windows.Forms.MessageBox]::Show(
-                "Version $($remote.Version) is available (you have $local).`r`n`r`nUpdate now?",
-                'BrandyTheme update', 'YesNo', 'Information')
-            if ($answer -eq 'Yes') { Install-Update $remote }
+            if (Show-Dialog 'Update available' "Version $($remote.Version) is ready. You have $local." 'Update now' 'Later') { Install-Update $remote }
         } elseif (-not $Silent) {
-            [void][System.Windows.Forms.MessageBox]::Show("You are up to date (version $local).", 'BrandyTheme', 'OK', 'Information')
+            [void](Show-Dialog 'You are up to date' "BrandyTheme $local is the latest version.")
         }
     } catch {
+        [System.Windows.Input.Mouse]::OverrideCursor = $null
         if ($Silent) { Write-Log "Update check skipped: $($_.Exception.Message)" }
-        else { [void][System.Windows.Forms.MessageBox]::Show("Could not check for updates:`r`n$($_.Exception.Message)", 'BrandyTheme', 'OK', 'Warning') }
-    } finally { $script:form.Cursor = 'Default' }
+        else { [void](Show-Dialog 'Could not check for updates' $_.Exception.Message) }
+    }
 }
 
-# ------------------------------------------------------------------ modern UI helpers
-$script:UI = @{
-    Bg     = ConvertTo-Color '#0E1014'
-    Side   = ConvertTo-Color '#13161C'
-    Card   = ConvertTo-Color '#1A1D25'
-    Card2  = ConvertTo-Color '#242833'
-    Line   = ConvertTo-Color '#2A2F3B'
-    Text   = ConvertTo-Color '#EEF0F4'
-    Sub    = ConvertTo-Color '#8D95A5'
-}
-$script:FontReg  = New-Object System.Drawing.Font('Segoe UI', 9.5)
-$script:FontSub  = New-Object System.Drawing.Font('Segoe UI', 8.5)
-$script:FontSemi = New-Object System.Drawing.Font('Segoe UI Semibold', 10)
-$script:FontBig  = New-Object System.Drawing.Font('Segoe UI Semibold', 22)
-$script:FontApp  = New-Object System.Drawing.Font('Segoe UI Semibold', 13)
+# ------------------------------------------------------------------ app logic
+function Get-SelectedBrand { $i = $script:lbBrands.SelectedItem; if ($i) { $i.Tag } }
 
-function New-Ctl([string]$Type, [int]$X, [int]$Y, [int]$W, [int]$H, [string]$Text = '') {
-    $c = New-Object "System.Windows.Forms.$Type"
-    $c.Location = New-Object System.Drawing.Point($X, $Y)
-    $c.Size = New-Object System.Drawing.Size($W, $H)
-    if ($Text) { $c.Text = $Text }
-    $c
+function New-BrandListItem($b) {
+    $xaml = @"
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Height="48">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <Ellipse Width="28" Height="28" HorizontalAlignment="Left" Margin="4,0,0,0">
+    <Ellipse.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="$($b.Primary)" Offset="0.1"/><GradientStop Color="$($b.Secondary)" Offset="1"/></LinearGradientBrush></Ellipse.Fill>
+  </Ellipse>
+  <StackPanel Grid.Column="1" VerticalAlignment="Center">
+    <TextBlock Text="$($b.Name)" FontSize="14" FontWeight="SemiBold" Foreground="#F2F4F8"/>
+    <TextBlock Text="$($b.Category)" FontSize="12" Foreground="#8E96A8" Margin="0,1,0,0"/>
+  </StackPanel>
+</Grid>
+"@
+    $li = New-Object System.Windows.Controls.ListBoxItem
+    $li.Content = [System.Windows.Markup.XamlReader]::Parse($xaml)
+    $li.Tag = $b
+    $st = $script:win.TryFindResource('BrandItem'); if ($st) { $li.Style = $st }
+    $li
 }
-
-function Set-DoubleBuffer($Ctl) {
-    try { $Ctl.GetType().GetProperty('DoubleBuffered', [System.Reflection.BindingFlags]'NonPublic,Instance').SetValue($Ctl, $true, $null) } catch { }
-}
-
-function Set-Rounded($Ctl, [int]$Radius) {
-    if ($Ctl.Width -le 0 -or $Ctl.Height -le 0) { return }
-    $gp = New-RoundRect 0 0 $Ctl.Width $Ctl.Height $Radius
-    $old = $Ctl.Region
-    $Ctl.Region = New-Object System.Drawing.Region($gp)
-    if ($old) { $old.Dispose() }
-    $gp.Dispose()
-}
-
-function Register-Rounded($Ctl, [int]$Radius) {
-    $Ctl.Tag = @{ R = $Radius }
-    $Ctl.Add_Resize({ param($s, $e) Set-Rounded $s $s.Tag.R })
-    Set-Rounded $Ctl $Radius
-}
-
-function New-Label([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, $Font, $Fore, $Back) {
-    $l = New-Ctl 'Label' $X $Y $W $H $Text
-    $l.Font = $Font; $l.ForeColor = $Fore; $l.BackColor = $Back; $l.AutoEllipsis = $true
-    $l
-}
-
-function Set-ButtonColor($Btn, $Back) {
-    $Btn.BackColor = $Back
-    $Btn.ForeColor = Get-ContrastText $Back
-    $Btn.FlatAppearance.MouseOverBackColor = Get-Mix $Back ([System.Drawing.Color]::White) 0.14
-    $Btn.FlatAppearance.MouseDownBackColor = Get-Mix $Back ([System.Drawing.Color]::Black) 0.18
-}
-
-function New-FlatButton([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, $Back, [int]$Radius = 10, $Font = $script:FontSemi) {
-    $b = New-Ctl 'Button' $X $Y $W $H $Text
-    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0; $b.UseVisualStyleBackColor = $false
-    $b.Cursor = 'Hand'; $b.Font = $Font
-    Set-ButtonColor $b $Back
-    Register-Rounded $b $Radius
-    $b
-}
-
-function New-Card([int]$X, [int]$Y, [int]$W, [int]$H) {
-    $p = New-Ctl 'Panel' $X $Y $W $H
-    $p.BackColor = $script:UI.Card
-    Register-Rounded $p 14
-    $p
-}
-
-function Set-DarkTitleBar($Frm) {
-    try { $v = 1; [void][BrandyNative]::DwmSetWindowAttribute($Frm.Handle, 20, [ref]$v, 4) } catch { }
-}
-
-function Get-SelectedBrand { $script:lbBrand.SelectedItem }
 
 function Update-WallPreview {
     $b = Get-SelectedBrand; if (-not $b) { return }
-    $old = $script:pbWall.Image
-    $script:pbWall.Image = New-BrandBitmap $b 640 360 'Wallpaper' $script:WallIdx
-    if ($old) { $old.Dispose() }
-    $script:lblWallCount.Text = "{0} / {1}" -f ($script:WallIdx + 1), $script:VariantCount
+    $bmp = New-BrandBitmap $b 800 450 'Wallpaper' $script:WallIdx
+    try { $script:brushWall.ImageSource = ConvertTo-BitmapSource $bmp } finally { $bmp.Dispose() }
+    $script:txtWallCount.Text = "{0} / {1}" -f ($script:WallIdx + 1), $script:VariantCount
 }
 
 function Update-LockPreview {
     $b = Get-SelectedBrand; if (-not $b) { return }
-    $old = $script:pbLock.Image
-    $script:pbLock.Image = New-BrandBitmap $b 640 360 'Lock' $script:LockIdx
-    if ($old) { $old.Dispose() }
-    $script:lblLockCount.Text = "{0} / {1}" -f ($script:LockIdx + 1), $script:VariantCount
+    $bmp = New-BrandBitmap $b 800 450 'Lock' $script:LockIdx
+    try { $script:brushLock.ImageSource = ConvertTo-BitmapSource $bmp } finally { $bmp.Dispose() }
+    $script:txtLockCount.Text = "{0} / {1}" -f ($script:LockIdx + 1), $script:VariantCount
 }
 
 function Update-IconPreview {
     $b = Get-SelectedBrand; if (-not $b) { return }
-    foreach ($pb in $script:flowIcons.Controls) {
-        $old = $pb.Image
-        $pb.Image = New-BrandIconBitmap $pb.Tag $b 256
-        if ($old) { $old.Dispose() }
+    foreach ($img in $script:iconImages) {
+        $bmp = New-BrandIconBitmap $img.Tag $b 128
+        try { $img.Source = ConvertTo-BitmapSource $bmp } finally { $bmp.Dispose() }
     }
 }
 
@@ -1024,329 +1275,313 @@ function Update-Brand {
     $changed = ($script:CurrentBrand -ne $b.Name)
     $script:CurrentBrand = $b.Name
     if ($changed) { $script:WallIdx = 0; $script:LockIdx = 0 }
-    $pri = ConvertTo-Color $b.Primary
-    $script:lblBrand.Text = $b.Name
-    $script:lblBrand.ForeColor = Get-Mix $pri ([System.Drawing.Color]::White) 0.3
-    $script:lblMeta.Text = $b.Category
-    Set-ButtonColor $script:btnApply $pri
-    $script:form.Cursor = 'WaitCursor'
+    $script:txtBrand.Text = $b.Name
+    $script:txtCat.Text = $b.Category
+    $script:catPill.Visibility = 'Visible'
+    $c = ConvertTo-Color $b.Primary
+    $mc = ConvertTo-MediaColor $c
+    $script:win.Resources['AccentColor'] = $mc
+    $script:win.Resources['Accent'] = New-Object System.Windows.Media.SolidColorBrush $mc
+    $script:win.Resources['AccentFg'] = New-Object System.Windows.Media.SolidColorBrush (ConvertTo-MediaColor (Get-ContrastText $c))
+    $script:lbBrands.ScrollIntoView($script:lbBrands.SelectedItem)
+    [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
     try {
         if ($changed) { Update-IconPreview }
         Update-WallPreview
         Update-LockPreview
-    } finally { $script:form.Cursor = 'Default' }
-    $script:lbBrand.Invalidate()
+    } finally { [System.Windows.Input.Mouse]::OverrideCursor = $null }
 }
 
 function Update-BrandList {
-    $q = $script:txtSearch.Text.Trim()
+    $q = $script:tbSearch.Text.Trim()
     $prev = Get-SelectedBrand
     $script:Rebuilding = $true
-    $script:lbBrand.BeginUpdate()
-    $script:lbBrand.Items.Clear()
-    foreach ($b in $script:Brands) {
+    $script:lbBrands.Items.Clear()
+    foreach ($li in $script:AllItems) {
+        $b = $li.Tag
         if (-not $q -or $b.Name.IndexOf($q, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $b.Category.IndexOf($q, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            [void]$script:lbBrand.Items.Add($b)
+            [void]$script:lbBrands.Items.Add($li)
         }
     }
-    $script:lbBrand.EndUpdate()
     $script:Rebuilding = $false
-    if ($script:lbBrand.Items.Count -gt 0) {
+    if ($script:lbBrands.Items.Count -gt 0) {
         $i = 0
-        if ($prev) { $idx = $script:lbBrand.Items.IndexOf($prev); if ($idx -ge 0) { $i = $idx } }
-        $script:lbBrand.SelectedIndex = $i
-        Update-Brand
+        if ($prev) { for ($k = 0; $k -lt $script:lbBrands.Items.Count; $k++) { if ($script:lbBrands.Items[$k].Tag.Name -eq $prev.Name) { $i = $k; break } } }
+        $script:lbBrands.SelectedIndex = $i
     } else {
-        $script:lblBrand.Text = 'No match'; $script:lblMeta.Text = ''
+        $script:txtBrand.Text = 'No match'; $script:catPill.Visibility = 'Collapsed'
     }
 }
 
+function Set-Busy([bool]$On) {
+    $script:rootGrid.IsHitTestVisible = -not $On
+    [System.Windows.Input.Mouse]::OverrideCursor = $(if ($On) { [System.Windows.Input.Cursors]::Wait } else { $null })
+    Update-UI
+}
+
 function Invoke-Step([string]$Label, [scriptblock]$Action) {
-    try { & $Action; Write-Log "OK      $Label" }
-    catch { Write-Log "FAILED  $Label - $($_.Exception.Message)" }
+    try { & $Action }
+    catch { $script:Fails++; Write-Log "$Label failed: $($_.Exception.Message)" }
 }
 
 function Invoke-Apply {
     $brand = Get-SelectedBrand
     if (-not $brand) { return }
-    if (-not ($script:cbWall.Checked -or $script:cbLock.Checked -or $script:cbAccent.Checked -or $script:cbDark.Checked -or
-              $script:cbIcons.Checked -or $script:cbDesk.Checked -or $script:cbStart.Checked)) {
-        [void][System.Windows.Forms.MessageBox]::Show('Choose at least one item to apply.', $script:AppName, 'OK', 'Information'); return
-    }
-    $script:form.Enabled = $false; $script:form.Cursor = 'WaitCursor'
+    $on = @($script:swWall, $script:swLock, $script:swAccent, $script:swDark, $script:swIcons, $script:swDesk, $script:swStart) | Where-Object { $_.IsChecked }
+    if (-not $on) { [void](Show-Dialog 'Nothing selected' 'Turn on at least one option to apply.'); return }
+    $script:Fails = 0
+    Set-Busy $true
     try {
         $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         $wv = $script:WallIdx; $lv = $script:LockIdx
-        Write-Log "Applying..."
+        $dark = [bool]$script:swDark.IsChecked
+        Write-Log 'Applying...'
         $icons = $null
-        if ($script:cbIcons.Checked -or $script:cbDesk.Checked -or $script:cbStart.Checked) {
-            Invoke-Step 'Generate icon set' { $script:icons = Build-BrandIcons $brand }
+        if ($script:swIcons.IsChecked -or $script:swDesk.IsChecked -or $script:swStart.IsChecked) {
+            Invoke-Step 'Icon set' { $script:icons = Build-BrandIcons $brand }
             $icons = $script:icons
         }
-        if ($script:cbWall.Checked)   { Invoke-Step 'Desktop wallpaper'  { Set-BrandWallpaper $brand $b.Width $b.Height $wv } }
-        if ($script:cbLock.Checked)   { Invoke-Step 'Lock screen'        { Set-BrandLockScreen $brand $b.Width $b.Height $lv } }
-        if ($script:cbAccent.Checked) { Invoke-Step 'Accent colour'      { Set-BrandAccent $brand $script:cbDark.Checked } }
-        elseif ($script:cbDark.Checked) { Invoke-Step 'Dark mode'        { Set-DarkModeOnly } }
+        if ($script:swWall.IsChecked)   { Write-Log 'Wallpaper...';  Invoke-Step 'Wallpaper'  { Set-BrandWallpaper $brand $b.Width $b.Height $wv } }
+        if ($script:swLock.IsChecked)   { Write-Log 'Lock screen...'; Invoke-Step 'Lock screen' { Set-BrandLockScreen $brand $b.Width $b.Height $lv } }
+        if ($script:swAccent.IsChecked) { Write-Log 'Colours...';    Invoke-Step 'Accent colour' { Set-BrandAccent $brand $dark } }
+        elseif ($dark)                  { Invoke-Step 'Dark mode' { Set-DarkModeOnly } }
         if ($icons) {
-            if ($script:cbIcons.Checked) { Invoke-Step 'File, folder, drive and app icons' { Set-ShellIcons $icons } }
-            if ($script:cbDesk.Checked)  { Invoke-Step 'Desktop system icons'              { Set-DesktopIcons $icons } }
-            if ($script:cbStart.Checked) { Invoke-Step 'Start menu folder icons'           { Set-StartFolderIcons $icons } }
+            Write-Log 'Icons...'
+            if ($script:swIcons.IsChecked) { Invoke-Step 'System icons'  { Set-ShellIcons $icons } }
+            if ($script:swDesk.IsChecked)  { Invoke-Step 'Desktop icons' { Set-DesktopIcons $icons } }
+            if ($script:swStart.IsChecked) { Invoke-Step 'Start menu icons' { Set-StartFolderIcons $icons } }
         }
         Write-State
-        Invoke-Step 'Refresh shell' { Update-ShellIcons }
-        Write-Log "Applied. Sign out and back in to see every icon and colour."
-    } finally { $script:form.Enabled = $true; $script:form.Cursor = 'Default' }
+        Invoke-Step 'Refresh' { Update-ShellIcons }
+        if ($script:Fails -gt 0) { Write-Log "Finished with $($script:Fails) issue(s). See ••• > Activity log." }
+        else { Write-Log 'Applied. Sign out and back in to see everything.' }
+    } finally { Set-Busy $false }
 }
 
-function Show-LogViewer {
-    $f = New-Ctl 'Form' 0 0 640 420
-    $f.Text = 'Activity log'; $f.StartPosition = 'CenterParent'; $f.BackColor = $script:UI.Bg; $f.ShowIcon = $false
-    $t = New-Ctl 'TextBox' 12 12 616 396
-    $t.Multiline = $true; $t.ReadOnly = $true; $t.ScrollBars = 'Vertical'; $t.BorderStyle = 'None'
-    $t.BackColor = $script:UI.Card; $t.ForeColor = $script:UI.Text; $t.Font = New-Object System.Drawing.Font('Consolas', 9.5)
-    $t.Anchor = 'Top,Bottom,Left,Right'
-    $t.Text = ($script:LogLines -join "`r`n")
-    $f.Controls.Add($t)
-    $f.Add_Shown({ Set-DarkTitleBar $this })
-    [void]$f.ShowDialog($script:form); $f.Dispose()
-}
-
-function Show-About {
-    $f = New-Ctl 'Form' 0 0 440 330
-    $f.Text = "About $($script:AppName)"
-    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.StartPosition = 'CenterParent'
-    $f.ClientSize = New-Object System.Drawing.Size(440, 330)
-    $f.BackColor = $script:UI.Bg; $f.ShowIcon = $false
-    $bg = $script:UI.Bg; $tx = $script:UI.Text; $sb = $script:UI.Sub
-    $pb = New-Ctl 'PictureBox' 24 24 72 72; $pb.SizeMode = 'Zoom'; $pb.Image = New-AppIconBitmap 144; $pb.BackColor = $bg
-    $t  = New-Label $script:AppName 112 26 300 36 $script:FontBig $tx $bg
-    $v  = New-Label "Version $($script:AppVersion)" 114 66 300 20 $script:FontReg $sb $bg
-    $a  = New-Label "Created by $($script:Author)" 24 118 390 22 $script:FontSemi $tx $bg
-    $e  = New-Ctl 'LinkLabel' 24 146 390 20 "Contact: $($script:Email)"
-    $gh = New-Ctl 'LinkLabel' 24 170 390 20 "GitHub: $($script:GitHubUrl)"
-    $e.Tag = "mailto:$($script:Email)"; $gh.Tag = $script:GitHubUrl
-    foreach ($l in $e, $gh) {
-        $l.BackColor = $bg; $l.LinkColor = Get-Mix (ConvertTo-Color '#4F8CFF') ([System.Drawing.Color]::White) 0.2; $l.ActiveLinkColor = [System.Drawing.Color]::White
-        $l.Font = $script:FontReg
-        $l.Add_LinkClicked({ param($s, $ev) Start-Process $s.Tag })
-    }
-    $d  = New-Label 'Brand names are trademarks of their respective owners. BrandyTheme is independent and not affiliated with them.' 24 206 392 52 $script:FontSub $sb $bg
-    $ok = New-FlatButton 'Close' 316 272 100 38 (ConvertTo-Color '#2D6BFF')
-    $ok.DialogResult = 'OK'; $f.AcceptButton = $ok
-    $f.Controls.AddRange(@($pb, $t, $v, $a, $e, $gh, $d, $ok))
-    $f.Add_Shown({ Set-DarkTitleBar $this })
-    [void]$f.ShowDialog($script:form)
-    $pb.Image.Dispose(); $f.Dispose()
+function Invoke-Restore {
+    if (-not (Show-Dialog 'Restore defaults' 'This puts back your original wallpaper, lock screen, colours and icons.' 'Restore' 'Cancel')) { return }
+    Set-Busy $true
+    try { Restore-All } finally { Set-Busy $false }
 }
 
 # ------------------------------------------------------------------ main window
+$script:MainXaml = @'
+<Window {{HEAD}} Title="BrandyTheme" Width="1200" Height="790" MinWidth="1060" MinHeight="730"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+  <Window.Resources>{{RES}}</Window.Resources>
+  <Grid x:Name="Root">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="292"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+    <!-- sidebar -->
+    <Border Background="{StaticResource Side}" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
+      <Grid Margin="18,22,14,18">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Margin="2,0,0,20">
+          <Image x:Name="LogoImg" Width="40" Height="40"/>
+          <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+            <TextBlock Text="BrandyTheme" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock x:Name="VerText" FontSize="12" Foreground="{StaticResource Sub}"/>
+          </StackPanel>
+        </StackPanel>
+        <TextBox x:Name="SearchBox" Grid.Row="1" Style="{StaticResource Search}" Margin="0,0,4,12"/>
+        <ListBox x:Name="BrandList" Grid.Row="2" ItemContainerStyle="{StaticResource BrandItem}" Margin="0,0,0,0"/>
+        <Button x:Name="RandomBtn" Grid.Row="3" Style="{StaticResource Soft}" Height="44" Margin="0,12,4,0" Content="Random theme"/>
+      </Grid>
+    </Border>
+
+    <!-- main -->
+    <Grid Grid.Column="1">
+      <Rectangle VerticalAlignment="Top" Height="280" IsHitTestVisible="False" Opacity="0.20">
+        <Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+          <GradientStop Color="{DynamicResource AccentColor}" Offset="0"/><GradientStop Color="#00000000" Offset="1"/>
+        </LinearGradientBrush></Rectangle.Fill>
+      </Rectangle>
+      <Grid Margin="34,28,34,26">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- header -->
+        <Grid Margin="0,0,0,22">
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock x:Name="BrandTitle" FontSize="34" FontWeight="SemiBold"/>
+            <Border x:Name="CatPill" Background="{StaticResource Card2}" CornerRadius="12" Padding="12,4" Margin="16,8,0,0" VerticalAlignment="Center">
+              <TextBlock x:Name="BrandCat" FontSize="12" Foreground="#B9C0CF"/>
+            </Border>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+            <Button x:Name="UpdBtn" Style="{StaticResource Ghost}" Content="Updates" Height="38"/>
+            <Button x:Name="AboutBtn" Style="{StaticResource Ghost}" Content="About" Height="38" Margin="2,0,0,0"/>
+            <Button x:Name="MoreBtn" Style="{StaticResource IconBtn}" Content="&#xE712;" Margin="2,0,0,0"/>
+          </StackPanel>
+          <Popup x:Name="MorePopup" PlacementTarget="{Binding ElementName=MoreBtn}" Placement="Bottom" HorizontalOffset="-230" VerticalOffset="6"
+                 StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+            <Border Background="{StaticResource Card2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="8" Width="252" Margin="8">
+              <Border.Effect><DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.45"/></Border.Effect>
+              <StackPanel>
+                <ToggleButton x:Name="SwAuto" Style="{StaticResource Switch}" Content="Update on start" Margin="10,10,10,10"/>
+                <Border Height="1" Background="{StaticResource Stroke}" Margin="6,0"/>
+                <Button x:Name="OpenLog" Style="{StaticResource Ghost}" Content="Activity log" HorizontalContentAlignment="Left" Height="38" Margin="0,4,0,0"/>
+                <Button x:Name="OpenData" Style="{StaticResource Ghost}" Content="Open data folder" HorizontalContentAlignment="Left" Height="38"/>
+                <Button x:Name="OpenWeb" Style="{StaticResource Ghost}" Content="GitHub" HorizontalContentAlignment="Left" Height="38"/>
+              </StackPanel>
+            </Border>
+          </Popup>
+        </Grid>
+
+        <!-- previews -->
+        <Grid Grid.Row="1" MinHeight="230">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+          <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="20" Padding="16">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+              <Grid Margin="2,0,0,12" Height="32">
+                <TextBlock Text="Wallpaper" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                  <TextBlock x:Name="WallCount" Foreground="{StaticResource Sub}" FontSize="13" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <Button x:Name="WallShuffle" Style="{StaticResource IconBtn}" Content="&#xE8B1;" Width="32" Height="32"/>
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Row="1">
+                <Rectangle RadiusX="14" RadiusY="14"><Rectangle.Fill><ImageBrush x:Name="WallBrush" Stretch="UniformToFill"/></Rectangle.Fill></Rectangle>
+                <Button x:Name="WallPrev" Style="{StaticResource Round}" Content="&#xE76B;" HorizontalAlignment="Left" Margin="12,0,0,0"/>
+                <Button x:Name="WallNext" Style="{StaticResource Round}" Content="&#xE76C;" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+              </Grid>
+            </Grid>
+          </Border>
+
+          <Border Grid.Column="2" Background="{StaticResource Card}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="20" Padding="16">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+              <Grid Margin="2,0,0,12" Height="32">
+                <TextBlock Text="Lock screen" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                  <TextBlock x:Name="LockCount" Foreground="{StaticResource Sub}" FontSize="13" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <Button x:Name="LockShuffle" Style="{StaticResource IconBtn}" Content="&#xE8B1;" Width="32" Height="32"/>
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Row="1">
+                <Rectangle RadiusX="14" RadiusY="14"><Rectangle.Fill><ImageBrush x:Name="LockBrush" Stretch="UniformToFill"/></Rectangle.Fill></Rectangle>
+                <Button x:Name="LockPrev" Style="{StaticResource Round}" Content="&#xE76B;" HorizontalAlignment="Left" Margin="12,0,0,0"/>
+                <Button x:Name="LockNext" Style="{StaticResource Round}" Content="&#xE76C;" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+              </Grid>
+            </Grid>
+          </Border>
+        </Grid>
+
+        <!-- icons -->
+        <Border Grid.Row="2" Background="{StaticResource Card}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="20" Padding="20,14" Margin="0,16,0,0">
+          <DockPanel>
+            <TextBlock Text="Icons" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Width="76" DockPanel.Dock="Left"/>
+            <WrapPanel x:Name="IconPanel" VerticalAlignment="Center"/>
+          </DockPanel>
+        </Border>
+
+        <!-- options -->
+        <Border Grid.Row="3" Background="{StaticResource Card}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="20" Padding="22,14" Margin="0,16,0,0">
+          <UniformGrid Columns="4">
+            <ToggleButton x:Name="SwWall"   Style="{StaticResource Switch}" Content="Wallpaper"     IsChecked="True" Margin="0,8"/>
+            <ToggleButton x:Name="SwLock"   Style="{StaticResource Switch}" Content="Lock screen"   IsChecked="True" Margin="0,8"/>
+            <ToggleButton x:Name="SwAccent" Style="{StaticResource Switch}" Content="Accent colour" IsChecked="True" Margin="0,8"/>
+            <ToggleButton x:Name="SwDark"   Style="{StaticResource Switch}" Content="Dark mode"     Margin="0,8"/>
+            <ToggleButton x:Name="SwIcons"  Style="{StaticResource Switch}" Content="System icons"  IsChecked="True" Margin="0,8"/>
+            <ToggleButton x:Name="SwDesk"   Style="{StaticResource Switch}" Content="Desktop icons" IsChecked="True" Margin="0,8"/>
+            <ToggleButton x:Name="SwStart"  Style="{StaticResource Switch}" Content="Start menu icons" IsChecked="True" Margin="0,8"/>
+          </UniformGrid>
+        </Border>
+
+        <!-- footer -->
+        <Grid Grid.Row="4" Margin="0,20,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Button x:Name="ApplyBtn" Style="{StaticResource Solid}" Content="Apply theme" Width="220" Height="50" FontSize="16"/>
+          <Button x:Name="RestoreBtn" Grid.Column="1" Style="{StaticResource Soft}" Content="Restore defaults" Width="170" Height="50" Margin="12,0,0,0"/>
+          <TextBlock x:Name="StatusText" Grid.Column="2" Margin="22,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource Sub}" FontSize="13" TextTrimming="CharacterEllipsis"/>
+        </Grid>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>
+'@
+
 try {
-    [System.Windows.Forms.Application]::EnableVisualStyles()
-    $ui = $script:UI
-    if (-not (Test-Path -LiteralPath $script:IconPath)) { $ib = New-AppIconBitmap 256; Save-Ico $ib $script:IconPath; $ib.Dispose() }
+    $script:win = ConvertFrom-Xaml $script:MainXaml
+    $win = $script:win
+    Set-WpfChrome $win
+    $script:Rebuilding = $false; $script:CurrentBrand = ''; $script:WallIdx = 0; $script:LockIdx = 0; $script:Fails = 0
 
-    $script:form = New-Object System.Windows.Forms.Form
-    $form = $script:form
-    $form.Text = $script:AppName
-    $form.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
-    $form.AutoScaleMode = 'Dpi'
-    $form.Font = $script:FontReg
-    $form.BackColor = $ui.Bg; $form.ForeColor = $ui.Text
-    $form.ClientSize = New-Object System.Drawing.Size(1120, 716)
-    $form.StartPosition = 'CenterScreen'
-    $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
-    Set-DoubleBuffer $form
-    # Taskbar fix #2: use the real BrandyTheme icon for the window / taskbar button
-    try { $form.Icon = New-Object System.Drawing.Icon($script:IconPath) }
-    catch { $tmpBmp = New-AppIconBitmap 64; $form.Icon = [System.Drawing.Icon]::FromHandle($tmpBmp.GetHicon()) }
+    # window / taskbar icon + logo
+    $logoBmp = New-AppIconBitmap 256
+    $logoSrc = ConvertTo-BitmapSource $logoBmp; $logoBmp.Dispose()
+    $win.Icon = $logoSrc
+    $win.FindName('LogoImg').Source = $logoSrc
+    $win.FindName('VerText').Text = "Version $($script:AppVersion)"
 
-    $script:Rebuilding = $false; $script:CurrentBrand = ''; $script:WallIdx = 0; $script:LockIdx = 0
+    # controls
+    $script:rootGrid   = $win.FindName('Root')
+    $script:tbSearch   = $win.FindName('SearchBox')
+    $script:lbBrands   = $win.FindName('BrandList')
+    $script:txtBrand   = $win.FindName('BrandTitle')
+    $script:txtCat     = $win.FindName('BrandCat')
+    $script:catPill    = $win.FindName('CatPill')
+    $script:txtStatus  = $win.FindName('StatusText')
+    $script:brushWall  = $win.FindName('WallBrush');  $script:txtWallCount = $win.FindName('WallCount')
+    $script:brushLock  = $win.FindName('LockBrush');  $script:txtLockCount = $win.FindName('LockCount')
+    $script:swWall = $win.FindName('SwWall'); $script:swLock = $win.FindName('SwLock'); $script:swAccent = $win.FindName('SwAccent')
+    $script:swDark = $win.FindName('SwDark'); $script:swIcons = $win.FindName('SwIcons'); $script:swDesk = $win.FindName('SwDesk'); $script:swStart = $win.FindName('SwStart')
+    $popup = $win.FindName('MorePopup'); $script:swAuto = $win.FindName('SwAuto')
+    $script:swAuto.IsChecked = [bool]$script:Settings.AutoUpdate
 
-    # ---- sidebar
-    $side = New-Ctl 'Panel' 0 0 264 716; $side.BackColor = $ui.Side
-    $pbLogo = New-Ctl 'PictureBox' 18 16 38 38; $pbLogo.SizeMode = 'Zoom'; $pbLogo.BackColor = $ui.Side; $pbLogo.Image = New-AppIconBitmap 96
-    $lblApp = New-Label $script:AppName 64 14 190 24 $script:FontApp $ui.Text $ui.Side
-    $lblVer = New-Label ("Version {0}" -f $script:AppVersion) 65 38 190 16 $script:FontSub $ui.Sub $ui.Side
-    $searchHost = New-Ctl 'Panel' 16 68 232 34; $searchHost.BackColor = $ui.Card; Register-Rounded $searchHost 10
-    $script:txtSearch = New-Ctl 'TextBox' 12 8 208 20
-    $script:txtSearch.BorderStyle = 'None'; $script:txtSearch.BackColor = $ui.Card; $script:txtSearch.ForeColor = $ui.Text; $script:txtSearch.Font = $script:FontReg
-    $searchHost.Controls.Add($script:txtSearch)
+    # icon strip
+    $script:iconImages = @()
+    foreach ($k in 'Folder', 'FolderOpen', 'File', 'App', 'Drive', 'Disc', 'Pc', 'Recycle', 'Network', 'User', 'Control') {
+        $img = New-Object System.Windows.Controls.Image
+        $img.Width = 44; $img.Height = 44; $img.Margin = New-Object System.Windows.Thickness(0, 2, 16, 2); $img.Tag = $k
+        [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($img, 'HighQuality')
+        [void]$win.FindName('IconPanel').Children.Add($img)
+        $script:iconImages += $img
+    }
 
-    $script:lbBrand = New-Ctl 'ListBox' 8 112 248 540
-    $lb = $script:lbBrand
-    $lb.DrawMode = 'OwnerDrawFixed'; $lb.ItemHeight = 48; $lb.BorderStyle = 'None'; $lb.BackColor = $ui.Side; $lb.IntegralHeight = $false
-    Set-DoubleBuffer $lb
-    $lb.Add_DrawItem({
-        param($s, $e)
-        if ($e.Index -lt 0) { return }
-        $br = $s.Items[$e.Index]
-        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
-        $bg = New-SolidBrush $script:UI.Side; $g.FillRectangle($bg, $e.Bounds); $bg.Dispose()
-        $pri = ConvertTo-Color $br.Primary; $sec = ConvertTo-Color $br.Secondary
-        $selected = $e.State.HasFlag([System.Windows.Forms.DrawItemState]::Selected)
-        $x = $e.Bounds.X + 6; $y = $e.Bounds.Y + 3; $w = $e.Bounds.Width - 12; $h = $e.Bounds.Height - 6
-        if ($selected) {
-            $path = New-RoundRect $x $y $w $h 10
-            $sel = New-SolidBrush $script:UI.Card2; $g.FillPath($sel, $path); $sel.Dispose()
-            $bar = New-SolidBrush $pri; $g.FillRectangle($bar, [single]($x), [single]($y + 12), [single]3, [single]($h - 24)); $bar.Dispose(); $path.Dispose()
-        }
-        $dot = New-Object System.Drawing.Drawing2D.LinearGradientBrush((New-Object System.Drawing.Rectangle(($x + 12), ($y + 7), 28, 28)), $pri, $sec, 45.0)
-        $g.FillEllipse($dot, ($x + 12), ($y + 7), 28, 28); $dot.Dispose()
-        $fmt = New-Object System.Drawing.StringFormat; $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
-        $ib = New-SolidBrush (Get-ContrastText $pri)
-        $g.DrawString($br.Name.Substring(0, 1), $script:FontSub, $ib, (New-Object System.Drawing.RectangleF(($x + 12), ($y + 7), 28, 28)), $fmt); $ib.Dispose()
-        $tb = New-SolidBrush $script:UI.Text; $sb = New-SolidBrush $script:UI.Sub
-        $g.DrawString($br.Name, $script:FontSemi, $tb, [single]($x + 50), [single]($y + 3))
-        $g.DrawString($br.Category, $script:FontSub, $sb, [single]($x + 50), [single]($y + 22))
-        $tb.Dispose(); $sb.Dispose()
-    })
-    $lb.Add_SelectedIndexChanged({ if (-not $script:Rebuilding) { Update-Brand } })
-    $script:txtSearch.Add_TextChanged({ Update-BrandList })
+    # brand list (items are built once)
+    $script:AllItems = @(foreach ($b in $script:Brands) { New-BrandListItem $b })
 
-    $btnShuffle = New-FlatButton 'Random theme' 16 664 232 40 $ui.Card2 12
-    $btnShuffle.ForeColor = $ui.Text
-    $btnShuffle.Add_Click({
-        if ($script:lbBrand.Items.Count -gt 0) {
-            $script:lbBrand.SelectedIndex = Get-Random -Maximum $script:lbBrand.Items.Count
+    # events
+    $script:lbBrands.Add_SelectionChanged({ if (-not $script:Rebuilding) { Update-Brand } })
+    $script:tbSearch.Add_TextChanged({ Update-BrandList })
+    $win.FindName('RandomBtn').Add_Click({
+        $n = $script:lbBrands.Items.Count
+        if ($n -gt 0) {
+            $script:lbBrands.SelectedIndex = Get-Random -Maximum $n
             $script:WallIdx = Get-Random -Maximum $script:VariantCount
             $script:LockIdx = Get-Random -Maximum $script:VariantCount
             Update-WallPreview; Update-LockPreview
         }
     })
-    $side.Controls.AddRange(@($pbLogo, $lblApp, $lblVer, $searchHost, $lb, $btnShuffle))
+    $win.FindName('WallPrev').Add_Click({ $script:WallIdx = ($script:WallIdx + $script:VariantCount - 1) % $script:VariantCount; Update-WallPreview })
+    $win.FindName('WallNext').Add_Click({ $script:WallIdx = ($script:WallIdx + 1) % $script:VariantCount; Update-WallPreview })
+    $win.FindName('WallShuffle').Add_Click({ $script:WallIdx = Get-Random -Maximum $script:VariantCount; Update-WallPreview })
+    $win.FindName('LockPrev').Add_Click({ $script:LockIdx = ($script:LockIdx + $script:VariantCount - 1) % $script:VariantCount; Update-LockPreview })
+    $win.FindName('LockNext').Add_Click({ $script:LockIdx = ($script:LockIdx + 1) % $script:VariantCount; Update-LockPreview })
+    $win.FindName('LockShuffle').Add_Click({ $script:LockIdx = Get-Random -Maximum $script:VariantCount; Update-LockPreview })
+    $win.FindName('ApplyBtn').Add_Click({ Invoke-Apply })
+    $win.FindName('RestoreBtn').Add_Click({ Invoke-Restore })
+    $win.FindName('AboutBtn').Add_Click({ Show-About })
+    $win.FindName('UpdBtn').Add_Click({ Invoke-UpdateCheck $false })
+    $win.FindName('MoreBtn').Add_Click({ $popup.IsOpen = $true }.GetNewClosure())
+    $script:swAuto.Add_Click({ $script:Settings.AutoUpdate = [bool]$script:swAuto.IsChecked; Write-Settings })
+    $win.FindName('OpenLog').Add_Click({ $popup.IsOpen = $false; Show-LogViewer }.GetNewClosure())
+    $win.FindName('OpenData').Add_Click({ $popup.IsOpen = $false; Start-Process explorer.exe $script:DataDir }.GetNewClosure())
+    $win.FindName('OpenWeb').Add_Click({ $popup.IsOpen = $false; Start-Process $script:GitHubUrl }.GetNewClosure())
 
-    # ---- header
-    $script:lblBrand = New-Label '' 288 16 520 42 $script:FontBig $ui.Text $ui.Bg
-    $script:lblMeta  = New-Label '' 291 58 540 20 $script:FontReg $ui.Sub $ui.Bg
-    $btnAbout = New-FlatButton 'About'   842 20 86 34 $ui.Card 10 $script:FontReg
-    $btnUpd   = New-FlatButton 'Updates' 936 20 108 34 $ui.Card 10 $script:FontReg
-    $btnMore  = New-FlatButton '•••'     1052 20 44 34 $ui.Card 10 $script:FontReg
-    foreach ($hb in $btnAbout, $btnUpd, $btnMore) { $hb.ForeColor = $ui.Text; $hb.FlatAppearance.MouseOverBackColor = $ui.Card2 }
-
-    # ---- preview cards
-    function New-PreviewCard([int]$X, [string]$Title, [string]$Which) {
-        $card = New-Card $X 92 396 296
-        $t = New-Label $Title 16 12 200 22 $script:FontSemi $ui.Text $ui.Card
-        $pb = New-Ctl 'PictureBox' 16 44 364 205; $pb.SizeMode = 'Zoom'; $pb.BackColor = $ui.Bg; Register-Rounded $pb 10
-        $prev = New-FlatButton ([string][char]0x2039) 16 258 38 28 $ui.Card2 8 $script:FontSemi
-        $cnt  = New-Label '' 60 262 70 20 $script:FontReg $ui.Sub $ui.Card; $cnt.TextAlign = 'MiddleCenter'
-        $next = New-FlatButton ([string][char]0x203A) 136 258 38 28 $ui.Card2 8 $script:FontSemi
-        $shuf = New-FlatButton 'Shuffle' 292 258 88 28 $ui.Card2 8 $script:FontSub
-        foreach ($bb in $prev, $next, $shuf) { $bb.ForeColor = $ui.Text }
-        $card.Controls.AddRange(@($t, $pb, $prev, $cnt, $next, $shuf))
-        if ($Which -eq 'Wall') {
-            $script:pbWall = $pb; $script:lblWallCount = $cnt
-            $prev.Add_Click({ $script:WallIdx = ($script:WallIdx + $script:VariantCount - 1) % $script:VariantCount; Update-WallPreview })
-            $next.Add_Click({ $script:WallIdx = ($script:WallIdx + 1) % $script:VariantCount; Update-WallPreview })
-            $shuf.Add_Click({ $script:WallIdx = Get-Random -Maximum $script:VariantCount; Update-WallPreview })
-        } else {
-            $script:pbLock = $pb; $script:lblLockCount = $cnt
-            $prev.Add_Click({ $script:LockIdx = ($script:LockIdx + $script:VariantCount - 1) % $script:VariantCount; Update-LockPreview })
-            $next.Add_Click({ $script:LockIdx = ($script:LockIdx + 1) % $script:VariantCount; Update-LockPreview })
-            $shuf.Add_Click({ $script:LockIdx = Get-Random -Maximum $script:VariantCount; Update-LockPreview })
+    $win.Add_Loaded({ Update-BrandList })
+    $win.Add_ContentRendered({
+        if (-not $script:FirstRender) {
+            $script:FirstRender = $true
+            if ($script:Settings.AutoUpdate -and -not $NoUpdateCheck) { Invoke-UpdateCheck $true }
         }
-        $card
-    }
-    $cardWall = New-PreviewCard 288 'Wallpaper' 'Wall'
-    $cardLock = New-PreviewCard 700 'Lock screen' 'Lock'
-
-    # ---- icon card
-    $cardIcons = New-Card 288 404 808 100
-    $cardIcons.Controls.Add((New-Label 'Icons' 16 10 200 22 $script:FontSemi $ui.Text $ui.Card))
-    $script:flowIcons = New-Ctl 'FlowLayoutPanel' 12 36 784 58
-    $script:flowIcons.BackColor = $ui.Card
-    foreach ($k in 'Folder', 'FolderOpen', 'File', 'App', 'Drive', 'Disc', 'Pc', 'Recycle', 'Network', 'User', 'Control') {
-        $ipb = New-Ctl 'PictureBox' 0 0 54 54
-        $ipb.SizeMode = 'Zoom'; $ipb.Tag = $k; $ipb.BackColor = $ui.Card; $ipb.Margin = New-Object System.Windows.Forms.Padding(2, 2, 12, 2)
-        $script:flowIcons.Controls.Add($ipb)
-    }
-    $cardIcons.Controls.Add($script:flowIcons)
-
-    # ---- options card
-    $cardOpt = New-Card 288 524 808 112
-    function New-Option([string]$Text, [int]$X, [int]$Y, [bool]$On) {
-        $c = New-Ctl 'CheckBox' $X $Y 370 24 $Text
-        $c.Checked = $On; $c.BackColor = $ui.Card; $c.ForeColor = $ui.Text; $c.Font = $script:FontReg; $c.Cursor = 'Hand'
-        $c
-    }
-    $script:cbWall   = New-Option 'Wallpaper' 20 10 $true
-    $script:cbLock   = New-Option 'Lock screen' 20 36 $true
-    $script:cbAccent = New-Option 'Accent colour' 20 62 $true
-    $script:cbDark   = New-Option 'Dark mode' 20 86 $false
-    $script:cbIcons  = New-Option 'File, folder and drive icons' 420 10 $true
-    $script:cbDesk   = New-Option 'Desktop icons' 420 36 $true
-    $script:cbStart  = New-Option 'Start menu icons' 420 62 $true
-    $cardOpt.Controls.AddRange(@($script:cbWall, $script:cbLock, $script:cbAccent, $script:cbDark, $script:cbIcons, $script:cbDesk, $script:cbStart))
-
-    # ---- actions
-    $script:btnApply = New-FlatButton 'Apply theme' 288 652 230 46 (ConvertTo-Color '#2D6BFF') 12 $script:FontApp
-    $btnRestore = New-FlatButton 'Restore defaults' 530 652 210 46 $ui.Card2 12
-    $btnRestore.ForeColor = $ui.Text
-    $script:lblStatus = New-Label '' 756 652 340 46 $script:FontSub $ui.Sub $ui.Bg
-    $script:lblStatus.TextAlign = 'MiddleLeft'; $script:lblStatus.AutoEllipsis = $false
-
-    $script:btnApply.Add_Click({ Invoke-Apply })
-    $btnRestore.Add_Click({
-        $a = [System.Windows.Forms.MessageBox]::Show('Revert everything BrandyTheme changed back to your original settings?', $script:AppName, 'YesNo', 'Question')
-        if ($a -eq 'Yes') { $script:form.Enabled = $false; try { Restore-All } finally { $script:form.Enabled = $true } }
     })
 
-    # ---- "more" menu (dark)
-    $ctx = New-Object System.Windows.Forms.ContextMenuStrip
-    try {
-        if (-not ('BrandyDarkTable' -as [type])) {
-            Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
-using System.Drawing;
-using System.Windows.Forms;
-public class BrandyDarkTable : ProfessionalColorTable {
-    static Color Bg = Color.FromArgb(26, 29, 37), Hover = Color.FromArgb(44, 49, 62), Line = Color.FromArgb(52, 57, 70);
-    public override Color ToolStripDropDownBackground { get { return Bg; } }
-    public override Color ImageMarginGradientBegin { get { return Bg; } }
-    public override Color ImageMarginGradientMiddle { get { return Bg; } }
-    public override Color ImageMarginGradientEnd { get { return Bg; } }
-    public override Color MenuBorder { get { return Line; } }
-    public override Color MenuItemBorder { get { return Hover; } }
-    public override Color MenuItemSelected { get { return Hover; } }
-    public override Color MenuItemSelectedGradientBegin { get { return Hover; } }
-    public override Color MenuItemSelectedGradientEnd { get { return Hover; } }
-    public override Color SeparatorDark { get { return Line; } }
-    public override Color SeparatorLight { get { return Line; } }
-    public override Color CheckBackground { get { return Hover; } }
-    public override Color CheckSelectedBackground { get { return Hover; } }
-    public override Color CheckPressedBackground { get { return Hover; } }
-}
-'@
-        }
-        $ctx.Renderer = New-Object System.Windows.Forms.ToolStripProfessionalRenderer (New-Object BrandyDarkTable)
-    } catch { }
-    $ctx.BackColor = $ui.Card; $ctx.ForeColor = $ui.Text; $ctx.Font = $script:FontReg
-    $mAuto = New-Object System.Windows.Forms.ToolStripMenuItem('Check for updates on start')
-    $mAuto.CheckOnClick = $true; $mAuto.Checked = [bool]$script:Settings.AutoUpdate
-    $mAuto.Add_CheckedChanged({ $script:Settings.AutoUpdate = $mAuto.Checked; Write-Settings })
-    $mLog  = New-Object System.Windows.Forms.ToolStripMenuItem('View activity log')
-    $mData = New-Object System.Windows.Forms.ToolStripMenuItem('Open data folder')
-    $mWeb  = New-Object System.Windows.Forms.ToolStripMenuItem('GitHub repository')
-    $mLog.Add_Click({ Show-LogViewer })
-    $mData.Add_Click({ Start-Process explorer.exe $script:DataDir })
-    $mWeb.Add_Click({ Start-Process $script:GitHubUrl })
-    foreach ($mi in $mAuto, $mLog, $mData, $mWeb) { $mi.ForeColor = $ui.Text; $mi.BackColor = $ui.Card }
-    [void]$ctx.Items.AddRange(@($mAuto, (New-Object System.Windows.Forms.ToolStripSeparator), $mLog, $mData, $mWeb))
-
-    $btnAbout.Add_Click({ Show-About })
-    $btnUpd.Add_Click({ Invoke-UpdateCheck $false })
-    $btnMore.Add_Click({ $ctx.Show($btnMore, (New-Object System.Drawing.Point(($btnMore.Width - 230), $btnMore.Height + 6))) })
-
-    $form.Controls.AddRange(@($side, $script:lblBrand, $script:lblMeta, $btnAbout, $btnUpd, $btnMore, $cardWall, $cardLock, $cardIcons, $cardOpt,
-                              $script:btnApply, $btnRestore, $script:lblStatus))
-
-    $form.Add_Shown({
-        Set-DarkTitleBar $script:form
-        try { [void][BrandyNative]::SendMessage($script:txtSearch.Handle, 0x1501, [IntPtr]1, 'Search') } catch { }
-        Update-BrandList
-        if ($script:Settings.AutoUpdate -and -not $NoUpdateCheck) { Invoke-UpdateCheck $true }
-    })
-
-    [System.Windows.Forms.Application]::Run($form)
+    [void]$win.ShowDialog()
 } catch {
     [void][System.Windows.Forms.MessageBox]::Show("BrandyTheme hit an unexpected error:`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error')
     exit 1

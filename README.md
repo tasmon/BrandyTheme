@@ -1,10 +1,12 @@
-# BrandyTheme 1.2.0
+# BrandyTheme 1.3.0
 
 Brand themes for Windows 10 and 11: wallpaper, lock screen, accent colour and icon sets for 40 brands
 (HP, Lenovo, Samsung, Intel, AMD, Ryzen, Dell, ASUS, Acer, MSI, Microsoft, Apple, NVIDIA, GeForce, Radeon,
 Razer, Alienware, Gigabyte, Logitech, Corsair, Sony, LG, Toshiba, Huawei, Xiaomi, Google, Qualcomm,
 Snapdragon, Canon, Epson, Western Digital, Seagate, Kingston, ThinkPad, ROG, Legion, Predator, Xbox,
 Surface, PlayStation).
+
+Created by **Tasmon Islam** - tasmon@outlook.com - https://github.com/tasmon/BrandyTheme
 
 ## Install
 1. Extract the zip.
@@ -17,9 +19,12 @@ Uninstall from *Settings > Apps*, or run `Install BrandyTheme.cmd /uninstall`.
 Clean colour artwork only - no text, no logos. Each brand has 12 wallpapers and 12 lock screens built from
 its own colours and 4 of 12 art styles, so no two brands look alike.
 
+## Updates (version.txt)
+Put these two files in the root of the `main` branch of github.com/tasmon/BrandyTheme:
+
 | File | Content |
 |---|---|
-| `version.txt` | the latest version on the first line, e.g. `1.2.1` |
+| `version.txt` | the latest version on the first line, e.g. `1.3.1` |
 | `BrandyTheme.ps1` | the latest script |
 
 To release an update: raise `$script:AppVersion` in `BrandyTheme.ps1`, set the same number in `version.txt`,
