@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.3.0'
+$script:AppVersion  = '1.3.1'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -1052,7 +1052,7 @@ function ConvertFrom-Xaml([string]$Xaml) {
 # ------------------------------------------------------------------ dialogs
 $script:DialogXaml = @'
 <Window {{HEAD}} Title="BrandyTheme" Width="440" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False"
-        WindowStartupLocation="CenterOwner" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
   <Window.Resources>{{RES}}</Window.Resources>
   <Grid Margin="30,28,30,24">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -1086,7 +1086,7 @@ function Show-Dialog {
 
 $script:AboutXaml = @'
 <Window {{HEAD}} Title="About BrandyTheme" Width="440" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False"
-        WindowStartupLocation="CenterOwner" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
   <Window.Resources>{{RES}}</Window.Resources>
   <StackPanel Margin="34,32,34,26">
     <StackPanel Orientation="Horizontal">
@@ -1127,7 +1127,7 @@ function Show-About {
 
 $script:LogXaml = @'
 <Window {{HEAD}} Title="Activity log" Width="620" Height="400" ShowInTaskbar="False" WindowStartupLocation="CenterOwner"
-        Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+        Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
   <Window.Resources>{{RES}}</Window.Resources>
   <Border Margin="16" Background="{StaticResource Card}" CornerRadius="14" Padding="14">
     <TextBox x:Name="Box" IsReadOnly="True" Background="Transparent" BorderThickness="0" Foreground="#C9D1E0"
@@ -1367,7 +1367,7 @@ function Invoke-Restore {
 # ------------------------------------------------------------------ main window
 $script:MainXaml = @'
 <Window {{HEAD}} Title="BrandyTheme" Width="1200" Height="790" MinWidth="1060" MinHeight="730"
-        WindowStartupLocation="CenterScreen" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+        WindowStartupLocation="CenterScreen" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
   <Window.Resources>{{RES}}</Window.Resources>
   <Grid x:Name="Root">
     <Grid.ColumnDefinitions><ColumnDefinition Width="292"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
