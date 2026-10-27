@@ -13,20 +13,24 @@
 
 .PARAMETER NoUpdateCheck    Skip the automatic update check at start-up.
 .PARAMETER ExportAppIcon    (Installer) Write BrandyTheme.ico to ProgramData and exit.
-.PARAMETER RestoreDefaults  (Uninstaller) Revert every change BrandyTheme made, without the GUI.
+.PARAMETER RestoreDefaults  (Uninstaller/app) Revert every change BrandyTheme made, without the GUI.
+.PARAMETER ApplyJob         (Internal) Apply a theme described by a job file, without the GUI.
+.PARAMETER ProgressFile     (Internal) Where a background job writes its progress lines.
 #>
 [CmdletBinding()]
 param(
     [switch]$NoUpdateCheck,
     [switch]$ExportAppIcon,
-    [switch]$RestoreDefaults
+    [switch]$RestoreDefaults,
+    [string]$ApplyJob,
+    [string]$ProgressFile
 )
 
 $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.4.1'
+$script:AppVersion  = '1.4.2'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -42,6 +46,7 @@ $script:StatePath    = Join-Path $script:DataDir 'state.json'
 $script:SettingsPath = Join-Path $script:DataDir 'settings.json'
 $script:IconPath     = Join-Path $script:DataDir 'BrandyTheme.ico'
 $script:txtStatus    = $null
+$script:ProgressFile = $ProgressFile
 $script:LogLines     = New-Object 'System.Collections.Generic.List[string]'
 
 foreach ($d in @($script:DataDir)) {
@@ -644,7 +649,8 @@ try {
 # ------------------------------------------------------------------ logging, settings, state
 function Write-Log([string]$Message) {
     $script:LogLines.Add(("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message))
-    if ($script:txtStatus) { $script:txtStatus.Text = $Message; Update-UI }
+    if ($script:ProgressFile) { try { Add-Content -LiteralPath $script:ProgressFile -Value $Message } catch { } }
+    elseif ($script:txtStatus) { $script:txtStatus.Text = $Message; Update-UI }
     else { Write-Host $Message }
 }
 
@@ -777,9 +783,16 @@ function Restore-Registry {
 }
 
 # ------------------------------------------------------------------ theme actions
+function Invoke-Ie4([string]$Arg) {
+    try {
+        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -ArgumentList $Arg -WindowStyle Hidden -PassThru
+        if (-not $p.WaitForExit(15000)) { $p.Kill() }
+    } catch { }
+}
+
 function Update-ShellIcons([switch]$RestartExplorer) {
     $ie4 = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
-    try { Start-Process -FilePath $ie4 -ArgumentList '-ClearIconCache' -WindowStyle Hidden -Wait } catch { }
+    Invoke-Ie4 '-ClearIconCache'
     [BrandyNative]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     $r = [UIntPtr]::Zero
     [void][BrandyNative]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$r)
@@ -796,10 +809,10 @@ function Update-ShellIcons([switch]$RestartExplorer) {
             do { Start-Sleep -Milliseconds 500 } until ((Get-Process -Name explorer -ErrorAction SilentlyContinue) -or ((Get-Date) -gt $deadline))
             if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
             Start-Sleep -Milliseconds 1200
-            try { Start-Process -FilePath $ie4 -ArgumentList '-show' -WindowStyle Hidden -Wait } catch { }
+            Invoke-Ie4 '-show'
         } catch { }
     } else {
-        try { Start-Process -FilePath $ie4 -ArgumentList '-show' -WindowStyle Hidden -Wait } catch { }
+        Invoke-Ie4 '-show'
     }
 }
 
@@ -951,7 +964,42 @@ function Restore-All {
     Write-Log 'Restored. Sign out and back in to finish.'
 }
 
-# headless restore (used by the uninstaller)
+function Invoke-JobStep([string]$Label, [scriptblock]$Action) {
+    try { & $Action }
+    catch { $script:JobFails++; Write-Log "$Label failed: $($_.Exception.Message)" }
+}
+
+function Invoke-ApplyJob([string]$Path) {
+    $job = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $brand = $script:Brands | Where-Object { $_.Name -eq $job.Brand } | Select-Object -First 1
+    if (-not $brand) { Write-Log 'Brand not found.'; return }
+    $script:JobFails = 0
+    $icons = $null
+    if ($job.DoIcons -or $job.DoDesk -or $job.DoStart) {
+        Write-Log 'Drawing icons...'
+        Invoke-JobStep 'Icon set' { $script:icons = Build-BrandIcons $brand }
+        $icons = $script:icons
+    }
+    if ($job.DoWall)   { Write-Log 'Setting wallpaper...';   Invoke-JobStep 'Wallpaper'   { Set-BrandWallpaper $brand $job.Width $job.Height $job.WallIdx } }
+    if ($job.DoLock)   { Write-Log 'Setting lock screen...'; Invoke-JobStep 'Lock screen' { Set-BrandLockScreen $brand $job.Width $job.Height $job.LockIdx } }
+    if ($job.DoAccent) { Write-Log 'Setting colours...';     Invoke-JobStep 'Accent colour' { Set-BrandAccent $brand ([bool]$job.DoDark) } }
+    elseif ($job.DoDark) { Invoke-JobStep 'Dark mode' { Set-DarkModeOnly } }
+    if ($icons) {
+        Write-Log 'Applying icons...'
+        if ($job.DoIcons) { Invoke-JobStep 'System icons'     { Set-ShellIcons $icons } }
+        if ($job.DoDesk)  { Invoke-JobStep 'Desktop icons'    { Set-DesktopIcons $icons } }
+        if ($job.DoStart) { Invoke-JobStep 'Start menu icons' { Set-StartFolderIcons $icons } }
+    }
+    Write-State
+    Invoke-JobStep 'Refresh' { Update-ShellIcons -RestartExplorer:([bool]$icons) }
+    if ($script:JobFails -gt 0) { Write-Log "Finished with $($script:JobFails) issue(s). See the activity log." }
+    else { Write-Log 'Applied. Sign out and back in to see everything.' }
+}
+
+# background modes (no window)
+if ($ApplyJob) { Invoke-ApplyJob $ApplyJob; exit 0 }
+
+# headless restore (used by the uninstaller and by the app)
 if ($RestoreDefaults) { Restore-All; exit 0 }
 
 # ------------------------------------------------------------------ WPF (modern UI)
@@ -974,16 +1022,9 @@ function Set-AppResource([string]$Key, $Value) {
 
 function ConvertTo-MediaColor([System.Drawing.Color]$C) { [System.Windows.Media.Color]::FromRgb($C.R, $C.G, $C.B) }
 
-# let the UI repaint during long operations
+# let the UI repaint / answer clicks while we wait
 function Update-UI {
-    try {
-        $frame = New-Object System.Windows.Threading.DispatcherFrame
-        $script:CurFrame = $frame
-        [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
-            [System.Windows.Threading.DispatcherPriority]::Background,
-            [System.Windows.Threading.DispatcherOperationCallback]{ param($o) $script:CurFrame.Continue = $false; $null }, $null)
-        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-    } catch { }
+    try { [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]{ }) } catch { }
 }
 
 # dark title bar that blends into the window
@@ -1441,49 +1482,67 @@ function Set-Busy([bool]$On) {
     Update-UI
 }
 
-function Invoke-Step([string]$Label, [scriptblock]$Action) {
-    try { & $Action }
-    catch { $script:Fails++; Write-Log "$Label failed: $($_.Exception.Message)" }
+# Runs a job in a separate hidden process and keeps the window alive (progress text updates live)
+function Invoke-BackgroundJob([string]$ScriptArgs) {
+    $prog = Join-Path $env:TEMP ('bt-progress-' + [guid]::NewGuid().ToString('N') + '.txt')
+    Set-Content -LiteralPath $prog -Value '' -Encoding ASCII
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $main = Join-Path $script:AppRoot 'BrandyTheme.ps1'
+    $argLine = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$main`" -ProgressFile `"$prog`" $ScriptArgs"
+    $proc = Start-Process -FilePath $psExe -ArgumentList $argLine -WindowStyle Hidden -PassThru
+    $seen = 0; $last = ''; $timedOut = $false
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $proc.HasExited) {
+        Update-UI
+        Start-Sleep -Milliseconds 150
+        $lines = @(Get-Content -LiteralPath $prog -ErrorAction SilentlyContinue | Where-Object { $_ })
+        if ($lines.Count -gt $seen) { $seen = $lines.Count; $last = $lines[-1]; $script:txtStatus.Text = $last; $script:LogLines.Add($last) }
+        if ($clock.Elapsed.TotalSeconds -gt 300) { try { $proc.Kill() } catch { }; $timedOut = $true; break }
+    }
+    [void]$proc.WaitForExit(3000)
+    $lines = @(Get-Content -LiteralPath $prog -ErrorAction SilentlyContinue | Where-Object { $_ })
+    if ($lines.Count -gt 0) { $last = $lines[-1] }
+    for ($i = $seen; $i -lt $lines.Count; $i++) { $script:LogLines.Add($lines[$i]) }
+    Remove-Item -LiteralPath $prog -Force -ErrorAction SilentlyContinue
+    $script:State = Read-State                      # the background process changed it
+    if ($timedOut) { throw 'This took too long and was stopped.' }
+    if ($proc.HasExited -and $proc.ExitCode -ne 0) { throw "The background step stopped unexpectedly (code $($proc.ExitCode))." }
+    $last
 }
 
 function Invoke-Apply {
     $brand = Get-SelectedBrand
     if (-not $brand) { return }
-    $on = @($script:swWall, $script:swLock, $script:swAccent, $script:swDark, $script:swIcons, $script:swDesk, $script:swStart) | Where-Object { $_.IsChecked }
-    if (-not $on) { [void](Show-Dialog 'Nothing selected' 'Turn on at least one option to apply.'); return }
-    $script:Fails = 0
+    $sw = @($script:swWall, $script:swLock, $script:swAccent, $script:swDark, $script:swIcons, $script:swDesk, $script:swStart)
+    if (-not ($sw | Where-Object { $_.IsChecked })) { [void](Show-Dialog 'Nothing selected' 'Turn on at least one option to apply.'); return }
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $job = [pscustomobject]@{
+        Brand = $brand.Name; Width = $b.Width; Height = $b.Height
+        WallIdx = $script:WallIdx; LockIdx = $script:LockIdx
+        DoWall = [bool]$script:swWall.IsChecked; DoLock = [bool]$script:swLock.IsChecked
+        DoAccent = [bool]$script:swAccent.IsChecked; DoDark = [bool]$script:swDark.IsChecked
+        DoIcons = [bool]$script:swIcons.IsChecked; DoDesk = [bool]$script:swDesk.IsChecked; DoStart = [bool]$script:swStart.IsChecked
+    }
+    $jobFile = Join-Path $env:TEMP ('bt-job-' + [guid]::NewGuid().ToString('N') + '.json')
+    $job | ConvertTo-Json | Set-Content -LiteralPath $jobFile -Encoding UTF8
     Set-Busy $true
     try {
-        $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $wv = $script:WallIdx; $lv = $script:LockIdx
-        $dark = [bool]$script:swDark.IsChecked
-        Write-Log 'Applying...'
-        $icons = $null
-        if ($script:swIcons.IsChecked -or $script:swDesk.IsChecked -or $script:swStart.IsChecked) {
-            Invoke-Step 'Icon set' { $script:icons = Build-BrandIcons $brand }
-            $icons = $script:icons
-        }
-        if ($script:swWall.IsChecked)   { Write-Log 'Wallpaper...';  Invoke-Step 'Wallpaper'  { Set-BrandWallpaper $brand $b.Width $b.Height $wv } }
-        if ($script:swLock.IsChecked)   { Write-Log 'Lock screen...'; Invoke-Step 'Lock screen' { Set-BrandLockScreen $brand $b.Width $b.Height $lv } }
-        if ($script:swAccent.IsChecked) { Write-Log 'Colours...';    Invoke-Step 'Accent colour' { Set-BrandAccent $brand $dark } }
-        elseif ($dark)                  { Invoke-Step 'Dark mode' { Set-DarkModeOnly } }
-        if ($icons) {
-            Write-Log 'Icons...'
-            if ($script:swIcons.IsChecked) { Invoke-Step 'System icons'  { Set-ShellIcons $icons } }
-            if ($script:swDesk.IsChecked)  { Invoke-Step 'Desktop icons' { Set-DesktopIcons $icons } }
-            if ($script:swStart.IsChecked) { Invoke-Step 'Start menu icons' { Set-StartFolderIcons $icons } }
-        }
-        Write-State
-        Invoke-Step 'Refresh' { Update-ShellIcons -RestartExplorer:([bool]$icons) }
-        if ($script:Fails -gt 0) { Write-Log "Finished with $($script:Fails) issue(s). See ••• > Activity log." }
-        else { Write-Log 'Applied. Sign out and back in to see everything.' }
-    } finally { Set-Busy $false }
+        $script:txtStatus.Text = 'Working...'
+        $msg = Invoke-BackgroundJob "-ApplyJob `"$jobFile`""
+        $script:txtStatus.Text = $(if ($msg) { $msg } else { 'Done.' })
+    } catch { Write-AppError $_ 'apply' }
+    finally { Set-Busy $false; Remove-Item -LiteralPath $jobFile -Force -ErrorAction SilentlyContinue }
 }
 
 function Invoke-Restore {
     if (-not (Show-Dialog 'Restore defaults' 'This puts back your original wallpaper, lock screen, colours and icons.' 'Restore' 'Cancel')) { return }
     Set-Busy $true
-    try { Restore-All } finally { Set-Busy $false }
+    try {
+        $script:txtStatus.Text = 'Working...'
+        $msg = Invoke-BackgroundJob '-RestoreDefaults'
+        $script:txtStatus.Text = $(if ($msg) { $msg } else { 'Restored.' })
+    } catch { Write-AppError $_ 'restore' }
+    finally { Set-Busy $false }
 }
 
 function Step-Wall([int]$Delta) { $script:WallIdx = ($script:WallIdx + $Delta + $script:VariantCount) % $script:VariantCount; Update-WallPreview }

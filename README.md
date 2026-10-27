@@ -42,7 +42,7 @@ Keep these two files in the root of the `main` branch of github.com/tasmon/Brand
 
 | File | Content |
 |---|---|
-| `version.txt` | the latest version on the first line, e.g. `1.4.2` |
+| `version.txt` | the latest version on the first line, e.g. `1.4.3` |
 | `BrandyTheme.ps1` | the latest script |
 
 To release: raise `$script:AppVersion` in `BrandyTheme.ps1`, put the same number in `version.txt`, commit and
