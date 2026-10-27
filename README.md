@@ -6,8 +6,6 @@ Razer, Alienware, Gigabyte, Logitech, Corsair, Sony, LG, Toshiba, Huawei, Xiaomi
 Snapdragon, Canon, Epson, Western Digital, Seagate, Kingston, ThinkPad, ROG, Legion, Predator, Xbox,
 Surface, PlayStation).
 
-Created by **Tasmon Islam** - tasmon@outlook.com - https://github.com/tasmon/BrandyTheme
-
 ## Install / update / uninstall
 1. Extract the zip.
 2. Double-click **Install BrandyTheme.cmd**, accept the UAC prompt and choose:
@@ -43,3 +41,6 @@ Optional: put the file's SHA-256 on line 2 of `version.txt` and the app will ver
 - Lock screen theming works on Pro, Enterprise and Education; Windows Home may ignore it.
 - A sign-out or restart may be needed before every icon refreshes.
 - Brand names are trademarks of their owners; this project is not affiliated with them.
+
+
+Created by **Tasmon Islam** - tasmon@outlook.com - https://github.com/tasmon/BrandyTheme
