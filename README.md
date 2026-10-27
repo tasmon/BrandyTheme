@@ -6,10 +6,14 @@ GeForce, Radeon, Razer, Alienware, Gigabyte, Logitech, Corsair, Sony, LG, Toshib
 Qualcomm, Snapdragon, Canon, Epson, Western Digital, Seagate, Kingston, ThinkPad, ROG, Legion, Predator,
 Xbox, Surface and PlayStation.
 
-<p align="center">
-  <img src="docs/screenshot-1.png" alt="BrandyTheme - choose a brand and preview wallpapers" width="49%">
-  <img src="docs/screenshot-2.png" alt="BrandyTheme - lock screens, icons and options" width="49%">
-</p>
+---
+
+  <img src="docs/screenshot-1.png" alt="BrandyTheme" width="80%">
+
+---
+  <img src="docs/screenshot-2.png" alt="BrandyTheme" width="80%">
+
+---
 
 ## Install / update / uninstall
 
