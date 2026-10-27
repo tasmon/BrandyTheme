@@ -6,6 +6,8 @@ Razer, Alienware, Gigabyte, Logitech, Corsair, Sony, LG, Toshiba, Huawei, Xiaomi
 Snapdragon, Canon, Epson, Western Digital, Seagate, Kingston, ThinkPad, ROG, Legion, Predator, Xbox,
 Surface, PlayStation).
 
+Created by **Tasmon Islam** - tasmon@outlook.com - https://github.com/tasmon/BrandyTheme
+
 ## Install / update / uninstall
 1. Extract the zip.
 2. Double-click **Install BrandyTheme.cmd**, accept the UAC prompt and choose:

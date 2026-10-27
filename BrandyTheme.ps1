@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.3.2'
+$script:AppVersion  = '1.3.3'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -881,6 +881,11 @@ function ConvertTo-BitmapSource($Bitmap) {
     $bi
 }
 
+function Set-AppResource([string]$Key, $Value) {
+    if ($Value -is [System.Management.Automation.PSObject]) { $Value = $Value.psobject.BaseObject }
+    $script:win.Resources[$Key] = $Value
+}
+
 function ConvertTo-MediaColor([System.Drawing.Color]$C) { [System.Windows.Media.Color]::FromRgb($C.R, $C.G, $C.B) }
 
 # let the UI repaint during long operations
@@ -1269,7 +1274,9 @@ function New-BrandListItem($b) {
 </Grid>
 "@
     $li = New-Object System.Windows.Controls.ListBoxItem
-    $li.Content = [System.Windows.Markup.XamlReader]::Parse($xaml)
+    $content = [System.Windows.Markup.XamlReader]::Parse($xaml)
+    if ($content -is [System.Management.Automation.PSObject]) { $content = $content.psobject.BaseObject }
+    $li.Content = $content
     $li.Tag = $b
     $st = $script:win.TryFindResource('BrandItem'); if ($st) { $li.Style = $st }
     $li
@@ -1308,9 +1315,10 @@ function Update-Brand {
     $script:catPill.Visibility = 'Visible'
     $c = ConvertTo-Color $b.Primary
     $mc = ConvertTo-MediaColor $c
-    $script:win.Resources['AccentColor'] = $mc
-    $script:win.Resources['Accent'] = New-Object System.Windows.Media.SolidColorBrush $mc
-    $script:win.Resources['AccentFg'] = New-Object System.Windows.Media.SolidColorBrush (ConvertTo-MediaColor (Get-ContrastText $c))
+    $fgColor = ConvertTo-MediaColor (Get-ContrastText $c)
+    Set-AppResource 'AccentColor' $mc
+    Set-AppResource 'Accent'   ([System.Windows.Media.SolidColorBrush]::new($mc))
+    Set-AppResource 'AccentFg' ([System.Windows.Media.SolidColorBrush]::new($fgColor))
     $script:lbBrands.ScrollIntoView($script:lbBrands.SelectedItem)
     [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
     try {
