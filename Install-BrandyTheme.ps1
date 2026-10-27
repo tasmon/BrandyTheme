@@ -23,6 +23,7 @@
 param(
     [switch]$Uninstall,
     [switch]$Silent,
+    [switch]$KeepTheme,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'BrandyTheme')
 )
 
@@ -35,11 +36,13 @@ if (-not $isAdmin) {
     $a = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`""
     if ($Uninstall) { $a += ' -Uninstall' }
     if ($Silent)    { $a += ' -Silent' }
+    if ($KeepTheme) { $a += ' -KeepTheme' }
     Start-Process -FilePath powershell.exe -ArgumentList $a -Verb RunAs
     exit
 }
 
 Add-Type -AssemblyName System.Windows.Forms
+function Step([string]$Text) { Write-Host "  $Text" }
 function Show-Msg([string]$Text, [string]$Icon = 'Information') {
     if ($Silent) { Write-Host $Text } else { [void][System.Windows.Forms.MessageBox]::Show($Text, "$AppName setup", 'OK', $Icon) }
 }
@@ -65,6 +68,10 @@ public static class BrandyThemeHost
     [STAThread]
     public static int Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs ev)
+        {
+            Report(ev.ExceptionObject as Exception);
+        };
         string dir = AppDomain.CurrentDomain.BaseDirectory;
         string script = Path.Combine(dir, "BrandyTheme.ps1");
         if (!File.Exists(script))
@@ -97,10 +104,26 @@ public static class BrandyThemeHost
         }
         catch (Exception ex)
         {
-            MessageBox.Show("BrandyTheme could not start:\r\n\r\n" + ex.Message, "BrandyTheme",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Report(ex);
             return 1;
         }
+    }
+
+    static void Report(Exception ex)
+    {
+        string text = (ex == null) ? "Unknown error" : ex.ToString();
+        string msg = (ex == null) ? "Unknown error" : ex.Message;
+        string log = "";
+        try
+        {
+            string d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BrandyTheme");
+            Directory.CreateDirectory(d);
+            log = Path.Combine(d, "crash.log");
+            File.AppendAllText(log, DateTime.Now.ToString("u") + "\r\n" + text + "\r\n\r\n");
+        }
+        catch { }
+        MessageBox.Show("BrandyTheme could not start:\r\n\r\n" + msg + (log.Length > 0 ? "\r\n\r\nDetails: " + log : ""),
+            "BrandyTheme", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }
 '@
@@ -163,8 +186,10 @@ try {
         $m = Select-String -Path $srcScript -Pattern "AppVersion\s*=\s*'([^']+)'" | Select-Object -First 1
         $version = $m.Matches[0].Groups[1].Value
 
+        Step "Installing BrandyTheme $version to $InstallDir"
         Get-Process -Name BrandyTheme -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        Step 'Copying files...'
         if ((Resolve-Path $PSScriptRoot).Path -ne (Resolve-Path $InstallDir).Path) {
             foreach ($f in 'BrandyTheme.ps1', 'Install-BrandyTheme.ps1', 'Install BrandyTheme.cmd', 'README.md', 'LICENSE') {
                 $p = Join-Path $PSScriptRoot $f
@@ -178,6 +203,7 @@ try {
         Start-Process -FilePath powershell.exe -Wait -WindowStyle Hidden `
             -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$mainScript`" -ExportAppIcon"
 
+        Step 'Building launcher (BrandyTheme.exe)...'
         # build the launcher; fall back to a hidden powershell.exe shortcut if compiling is blocked
         $exe = New-Launcher $InstallDir $iconFile
         $ws = New-Object -ComObject WScript.Shell
@@ -194,6 +220,7 @@ try {
         if (Test-Path -LiteralPath $iconFile) { $lnk.IconLocation = $iconFile }
         $lnk.Save()
 
+        Step 'Creating Start menu shortcut and registering the app...'
         # Add/Remove Programs entry
         New-Item -Path $UninstallKey -Force | Out-Null
         $props = @{
@@ -217,14 +244,15 @@ try {
     }
     else {
         # ------------------------------------------------------------ UNINSTALL
-        $restore = $true
-        if (-not $Silent) {
+        $restore = -not $KeepTheme
+        if (-not $Silent -and -not $KeepTheme) {
             $ans = [System.Windows.Forms.MessageBox]::Show(
                 "Restore your original wallpaper, lock screen, colours and icons before uninstalling?`r`n`r`n(Choose No to keep the current look; the icon files will then be left in place so nothing breaks.)",
                 "$AppName setup", 'YesNoCancel', 'Question')
             if ($ans -eq 'Cancel') { exit }
             $restore = ($ans -eq 'Yes')
         }
+        Step 'Uninstalling BrandyTheme...'
         Get-Process -Name BrandyTheme -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         $mainScript = Join-Path $InstallDir 'BrandyTheme.ps1'
         if ($restore -and (Test-Path -LiteralPath $mainScript)) {

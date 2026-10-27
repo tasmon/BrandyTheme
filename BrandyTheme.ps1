@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.3.1'
+$script:AppVersion  = '1.3.2'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -606,6 +606,34 @@ function Write-Log([string]$Message) {
     if ($script:txtStatus) { $script:txtStatus.Text = $Message; Update-UI }
     else { Write-Host $Message }
 }
+
+# Diagnostics: any problem is written to error.log and shown, instead of the app silently closing
+$script:ShowingError = $false
+function Write-Trace([string]$Message) {
+    try { Add-Content -LiteralPath (Join-Path $script:DataDir 'app.log') -Value ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message) -Encoding UTF8 } catch { }
+}
+function Write-AppError($ErrorObject, [string]$Where = '') {
+    $detail = ''
+    if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
+        $short = $ErrorObject.Exception.Message
+        $detail = "$short`r`n$($ErrorObject.InvocationInfo.PositionMessage)`r`n$($ErrorObject.ScriptStackTrace)"
+    } elseif ($ErrorObject -is [Exception]) {
+        $short = $ErrorObject.Message; $detail = $ErrorObject.ToString()
+    } else { $short = "$ErrorObject"; $detail = $short }
+    $logFile = Join-Path $script:DataDir 'error.log'
+    try { Add-Content -LiteralPath $logFile -Value ("[{0:u}] {1} v{2}`r`n{3}`r`n" -f (Get-Date), $Where, $script:AppVersion, $detail) -Encoding UTF8 } catch { }
+    $script:LogLines.Add("ERROR ($Where): $short")
+    if ($script:txtStatus) { try { $script:txtStatus.Text = "Something went wrong ($Where). See error.log in the data folder." } catch { } }
+    if (-not $script:ShowingError) {
+        $script:ShowingError = $true
+        try { [void][System.Windows.Forms.MessageBox]::Show("BrandyTheme ran into a problem ($Where):`r`n`r`n$short`r`n`r`nDetails were saved to:`r`n$logFile", $script:AppName, 'OK', 'Warning') }
+        finally { $script:ShowingError = $false }
+    }
+}
+function Invoke-Safe([scriptblock]$Action, [string]$Where = 'action') {
+    try { & $Action } catch { Write-AppError $_ $Where }
+}
+trap { Write-AppError $_ 'startup'; exit 1 }
 
 function Read-Settings {
     $s = @{ AutoUpdate = $true }
@@ -1364,6 +1392,20 @@ function Invoke-Restore {
     try { Restore-All } finally { Set-Busy $false }
 }
 
+function Step-Wall([int]$Delta) { $script:WallIdx = ($script:WallIdx + $Delta + $script:VariantCount) % $script:VariantCount; Update-WallPreview }
+function Step-Lock([int]$Delta) { $script:LockIdx = ($script:LockIdx + $Delta + $script:VariantCount) % $script:VariantCount; Update-LockPreview }
+function Set-RandomWall { $script:WallIdx = Get-Random -Maximum $script:VariantCount; Update-WallPreview }
+function Set-RandomLock { $script:LockIdx = Get-Random -Maximum $script:VariantCount; Update-LockPreview }
+function Set-RandomTheme {
+    $n = $script:lbBrands.Items.Count
+    if ($n -gt 0) {
+        $script:lbBrands.SelectedIndex = Get-Random -Maximum $n
+        $script:WallIdx = Get-Random -Maximum $script:VariantCount
+        $script:LockIdx = Get-Random -Maximum $script:VariantCount
+        Update-WallPreview; Update-LockPreview
+    }
+}
+
 # ------------------------------------------------------------------ main window
 $script:MainXaml = @'
 <Window {{HEAD}} Title="BrandyTheme" Width="1200" Height="790" MinWidth="1060" MinHeight="730"
@@ -1505,7 +1547,9 @@ $script:MainXaml = @'
 '@
 
 try {
+    Set-Content -LiteralPath (Join-Path $script:DataDir 'app.log') -Value ("BrandyTheme $($script:AppVersion) starting {0:u}" -f (Get-Date)) -Encoding UTF8
     $script:win = ConvertFrom-Xaml $script:MainXaml
+    Write-Trace 'layout parsed'
     $win = $script:win
     Set-WpfChrome $win
     $script:Rebuilding = $false; $script:CurrentBrand = ''; $script:WallIdx = 0; $script:LockIdx = 0; $script:Fails = 0
@@ -1545,44 +1589,44 @@ try {
     # brand list (items are built once)
     $script:AllItems = @(foreach ($b in $script:Brands) { New-BrandListItem $b })
 
-    # events
-    $script:lbBrands.Add_SelectionChanged({ if (-not $script:Rebuilding) { Update-Brand } })
-    $script:tbSearch.Add_TextChanged({ Update-BrandList })
-    $win.FindName('RandomBtn').Add_Click({
-        $n = $script:lbBrands.Items.Count
-        if ($n -gt 0) {
-            $script:lbBrands.SelectedIndex = Get-Random -Maximum $n
-            $script:WallIdx = Get-Random -Maximum $script:VariantCount
-            $script:LockIdx = Get-Random -Maximum $script:VariantCount
-            Update-WallPreview; Update-LockPreview
-        }
-    })
-    $win.FindName('WallPrev').Add_Click({ $script:WallIdx = ($script:WallIdx + $script:VariantCount - 1) % $script:VariantCount; Update-WallPreview })
-    $win.FindName('WallNext').Add_Click({ $script:WallIdx = ($script:WallIdx + 1) % $script:VariantCount; Update-WallPreview })
-    $win.FindName('WallShuffle').Add_Click({ $script:WallIdx = Get-Random -Maximum $script:VariantCount; Update-WallPreview })
-    $win.FindName('LockPrev').Add_Click({ $script:LockIdx = ($script:LockIdx + $script:VariantCount - 1) % $script:VariantCount; Update-LockPreview })
-    $win.FindName('LockNext').Add_Click({ $script:LockIdx = ($script:LockIdx + 1) % $script:VariantCount; Update-LockPreview })
-    $win.FindName('LockShuffle').Add_Click({ $script:LockIdx = Get-Random -Maximum $script:VariantCount; Update-LockPreview })
-    $win.FindName('ApplyBtn').Add_Click({ Invoke-Apply })
-    $win.FindName('RestoreBtn').Add_Click({ Invoke-Restore })
-    $win.FindName('AboutBtn').Add_Click({ Show-About })
-    $win.FindName('UpdBtn').Add_Click({ Invoke-UpdateCheck $false })
-    $win.FindName('MoreBtn').Add_Click({ $popup.IsOpen = $true }.GetNewClosure())
-    $script:swAuto.Add_Click({ $script:Settings.AutoUpdate = [bool]$script:swAuto.IsChecked; Write-Settings })
-    $win.FindName('OpenLog').Add_Click({ $popup.IsOpen = $false; Show-LogViewer }.GetNewClosure())
-    $win.FindName('OpenData').Add_Click({ $popup.IsOpen = $false; Start-Process explorer.exe $script:DataDir }.GetNewClosure())
-    $win.FindName('OpenWeb').Add_Click({ $popup.IsOpen = $false; Start-Process $script:GitHubUrl }.GetNewClosure())
+    # events - every handler is wrapped so a problem is reported instead of closing the app
+    $script:popup = $popup
+    $script:lbBrands.Add_SelectionChanged({ if (-not $script:Rebuilding) { Invoke-Safe { Update-Brand } 'select brand' } })
+    $script:tbSearch.Add_TextChanged({ Invoke-Safe { Update-BrandList } 'search' })
+    $win.FindName('RandomBtn').Add_Click({ Invoke-Safe { Set-RandomTheme } 'random theme' })
+    $win.FindName('WallPrev').Add_Click({ Invoke-Safe { Step-Wall -1 } 'wallpaper' })
+    $win.FindName('WallNext').Add_Click({ Invoke-Safe { Step-Wall 1 } 'wallpaper' })
+    $win.FindName('WallShuffle').Add_Click({ Invoke-Safe { Set-RandomWall } 'wallpaper' })
+    $win.FindName('LockPrev').Add_Click({ Invoke-Safe { Step-Lock -1 } 'lock screen' })
+    $win.FindName('LockNext').Add_Click({ Invoke-Safe { Step-Lock 1 } 'lock screen' })
+    $win.FindName('LockShuffle').Add_Click({ Invoke-Safe { Set-RandomLock } 'lock screen' })
+    $win.FindName('ApplyBtn').Add_Click({ Invoke-Safe { Invoke-Apply } 'apply' })
+    $win.FindName('RestoreBtn').Add_Click({ Invoke-Safe { Invoke-Restore } 'restore' })
+    $win.FindName('AboutBtn').Add_Click({ Invoke-Safe { Show-About } 'about' })
+    $win.FindName('UpdBtn').Add_Click({ Invoke-Safe { Invoke-UpdateCheck $false } 'update check' })
+    $win.FindName('MoreBtn').Add_Click({ $script:popup.IsOpen = $true })
+    $script:swAuto.Add_Click({ Invoke-Safe { $script:Settings.AutoUpdate = [bool]$script:swAuto.IsChecked; Write-Settings } 'settings' })
+    $win.FindName('OpenLog').Add_Click({ $script:popup.IsOpen = $false; Invoke-Safe { Show-LogViewer } 'log' })
+    $win.FindName('OpenData').Add_Click({ $script:popup.IsOpen = $false; Invoke-Safe { Start-Process explorer.exe $script:DataDir } 'open folder' })
+    $win.FindName('OpenWeb').Add_Click({ $script:popup.IsOpen = $false; Invoke-Safe { Start-Process $script:GitHubUrl } 'open website' })
 
-    $win.Add_Loaded({ Update-BrandList })
+    # anything that still escapes a handler (layout/render errors) is reported here instead of crashing the process
+    $win.Dispatcher.Add_UnhandledException({ param($s, $e) $e.Handled = $true; Write-AppError $e.Exception 'window' })
+
+    $win.Add_Loaded({ Write-Trace 'window loaded'; Invoke-Safe { Update-BrandList } 'load brands' })
     $win.Add_ContentRendered({
-        if (-not $script:FirstRender) {
-            $script:FirstRender = $true
-            if ($script:Settings.AutoUpdate -and -not $NoUpdateCheck) { Invoke-UpdateCheck $true }
-        }
+        Invoke-Safe {
+            if (-not $script:FirstRender) {
+                $script:FirstRender = $true
+                Write-Trace 'window shown'
+                if ($script:Settings.AutoUpdate -and -not $NoUpdateCheck) { Invoke-UpdateCheck $true }
+            }
+        } 'startup'
     })
+    Write-Trace 'showing window'
 
     [void]$win.ShowDialog()
 } catch {
-    [void][System.Windows.Forms.MessageBox]::Show("BrandyTheme hit an unexpected error:`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error')
+    Write-AppError $_ 'startup'
     exit 1
 }
