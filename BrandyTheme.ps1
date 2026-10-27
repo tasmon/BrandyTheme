@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.3.3'
+$script:AppVersion  = '1.4.1'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -151,7 +151,7 @@ function Add-Glow($g, [double]$Cx, [double]$Cy, [double]$R, $Color, [int]$Alpha)
     $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
     $gp.AddEllipse([single]($Cx - $R), [single]($Cy - $R), [single](2 * $R), [single](2 * $R))
     $pb = New-Object System.Drawing.Drawing2D.PathGradientBrush($gp)
-    $pb.CenterColor = New-Alpha $Color $Alpha
+    $pb.CenterColor = New-Alpha $Color ([int]($Alpha * $script:ArtK))
     $pb.SurroundColors = [System.Drawing.Color[]]@((New-Alpha $Color 0))
     $g.FillPath($pb, $gp)
     $pb.Dispose(); $gp.Dispose()
@@ -163,14 +163,31 @@ function Get-BrandSeed([string]$Name, [int]$Variant, [int]$Salt) {
     [int](($h + $Variant * 7919 + $Salt * 104729) % 2147000000)
 }
 
-# Every brand has 4 art styles x 3 palettes = 12 looks; wallpaper and lock screen use different combinations + seeds
-function Get-VariantInfo($Brand, [int]$Variant, [string]$Mode) {
-    $n = $Brand.Styles.Count
-    $lock = ($Mode -eq 'Lock')
-    $styleIdx = ($Variant + $(if ($lock) { 2 } else { 0 })) % $n
-    $palIdx   = ([int][Math]::Floor($Variant / $n) + $(if ($lock) { 1 } else { 0 })) % 3
-    [pscustomobject]@{ Style = $Brand.Styles[$styleIdx]; Palette = $palIdx; PaletteName = @('Classic', 'Inverted', 'Midnight')[$palIdx] }
+# 12 art styles x 6 palettes. A brand's variants walk through ALL 12 styles (its own 4 favourites first, then a
+# brand-specific shuffle of the rest), so no two wallpapers of a brand repeat; lock screens start half-way round.
+$script:AllStyles    = 'Glow', 'Waves', 'Rings', 'Hex', 'Circuit', 'Triangles', 'Stripes', 'Grid', 'Bokeh', 'Burst', 'Dots', 'Chevrons'
+$script:PaletteNames = 'Classic', 'Inverted', 'Midnight', 'Duotone', 'Spotlight', 'Aurora'
+$script:StyleOrderCache = @{}
+$script:ArtK = 1.0
+
+function Get-StyleOrder($Brand) {
+    if ($script:StyleOrderCache.ContainsKey($Brand.Name)) { return $script:StyleOrderCache[$Brand.Name] }
+    $r = New-Object System.Random (Get-BrandSeed $Brand.Name 0 77)
+    $rest = @($script:AllStyles | Where-Object { $Brand.Styles -notcontains $_ } | Sort-Object { $r.Next() })
+    $order = @($Brand.Styles) + $rest
+    $script:StyleOrderCache[$Brand.Name] = $order
+    $order
 }
+
+function Get-VariantInfo($Brand, [int]$Variant, [string]$Mode) {
+    $order = @(Get-StyleOrder $Brand)
+    $lock = ($Mode -eq 'Lock')
+    $styleIdx = ($Variant + $(if ($lock) { 6 } else { 0 })) % $order.Count
+    $palIdx   = ($Variant + $(if ($lock) { 3 } else { 0 }) + ($Brand.Name.Length % 6)) % 6
+    [pscustomobject]@{ Style = $order[$styleIdx]; Palette = $palIdx; PaletteName = $script:PaletteNames[$palIdx] }
+}
+
+function New-AlphaK([System.Drawing.Color]$C, [int]$A) { New-Alpha $C ([int]($A * $script:ArtK)) }
 
 # ------------------------------------------------------------------ 12 art styles
 function Invoke-BrandArt {
@@ -178,6 +195,7 @@ function Invoke-BrandArt {
     $u = [double]$CH
     $white = [System.Drawing.Color]::White
     $PF = [System.Drawing.PointF]
+    $sc = 0.65 + 0.85 * $rng.NextDouble()      # motif size differs from image to image
 
     switch ($Style) {
         'Glow' {
@@ -188,7 +206,7 @@ function Invoke-BrandArt {
         }
         'Waves' {
             for ($i = 0; $i -lt 6; $i++) {
-                $base = $u * (0.36 + 0.1 * $i); $amp = $u * (0.025 + 0.045 * $rng.NextDouble())
+                $base = $u * (0.36 + 0.1 * $i); $amp = $u * (0.025 + 0.045 * $rng.NextDouble()) * $sc
                 $fr = 1 + 2 * $rng.NextDouble(); $ph = 6.28 * $rng.NextDouble()
                 $pts = New-Object 'System.Collections.Generic.List[System.Drawing.PointF]'
                 $step = $CW / 60.0
@@ -197,24 +215,24 @@ function Invoke-BrandArt {
                 }
                 $pts.Add($PF::new([single]($CW + 10), [single]($CH + 10))); $pts.Add($PF::new(-10, [single]($CH + 10)))
                 $col = if ($i % 2) { $Sec } else { $Pri }
-                $br = New-SolidBrush (New-Alpha $col (24 + $i * 9))
+                $br = New-SolidBrush (New-AlphaK $col (24 + $i * 9))
                 $g.FillPolygon($br, $pts.ToArray()); $br.Dispose()
             }
         }
         'Rings' {
-            $cx = $CW * (0.2 + 0.6 * $rng.NextDouble()); $cy = $CH * (0.2 + 0.6 * $rng.NextDouble()); $n = 14 + $rng.Next(8)
+            $cx = $CW * (0.2 + 0.6 * $rng.NextDouble()); $cy = $CH * (0.2 + 0.6 * $rng.NextDouble()); $n = [int](12 / $sc) + 6 + $rng.Next(6)
             Add-Glow $g $cx $cy ($u * 0.55) $Sec 85
             for ($i = 1; $i -le $n; $i++) {
-                $r = $u * 0.09 * $i; $a = [int](130 - $i * (115.0 / $n))
+                $r = $u * 0.075 * $sc * $i; $a = [int](130 - $i * (115.0 / $n))
                 $col = if ($i % 3 -eq 0) { $Sec } else { $white }
-                $pen = New-Object System.Drawing.Pen((New-Alpha $col ([Math]::Max(10, [int]($a * 0.7)))), [single]([Math]::Max(1, $u * 0.003)))
+                $pen = New-Object System.Drawing.Pen((New-AlphaK $col ([Math]::Max(10, [int]($a * 0.7)))), [single]([Math]::Max(1, $u * 0.003)))
                 Add-DrawOval $g $pen ($cx - $r) ($cy - $r) (2 * $r) (2 * $r); $pen.Dispose()
             }
         }
         'Hex' {
-            $sz = $u / 8.5; $hw = [Math]::Sqrt(3) * $sz
-            $pen = New-Object System.Drawing.Pen((New-Alpha $white 28), [single]([Math]::Max(1, $u * 0.0025)))
-            $b1 = New-SolidBrush (New-Alpha $Pri 80); $b2 = New-SolidBrush (New-Alpha $Sec 62); $b3 = New-SolidBrush (New-Alpha $white 22)
+            $sz = ($u / 8.5) * $sc; $hw = [Math]::Sqrt(3) * $sz
+            $pen = New-Object System.Drawing.Pen((New-AlphaK $white 28), [single]([Math]::Max(1, $u * 0.0025)))
+            $b1 = New-SolidBrush (New-AlphaK $Pri 80); $b2 = New-SolidBrush (New-AlphaK $Sec 62); $b3 = New-SolidBrush (New-AlphaK $white 22)
             $rows = [int]($CH / ($sz * 1.5)) + 2; $cols = [int]($CW / $hw) + 2
             $hp = New-Object 'System.Drawing.PointF[]' 6
             for ($rr = -1; $rr -lt $rows; $rr++) {
@@ -232,9 +250,9 @@ function Invoke-BrandArt {
             $pen.Dispose(); $b1.Dispose(); $b2.Dispose(); $b3.Dispose()
         }
         'Circuit' {
-            $gr = $u / 24
-            $pen = New-Object System.Drawing.Pen((New-Alpha $Sec 100), [single]([Math]::Max(1.5, $u * 0.0035)))
-            $nb = New-SolidBrush (New-Alpha $Sec 170)
+            $gr = ($u / 24) * $sc
+            $pen = New-Object System.Drawing.Pen((New-AlphaK $Sec 100), [single]([Math]::Max(1.5, $u * 0.0035)))
+            $nb = New-SolidBrush (New-AlphaK $Sec 170)
             for ($t = 0; $t -lt 36; $t++) {
                 $x = [Math]::Round($CW * $rng.NextDouble() / $gr) * $gr; $y = [Math]::Round($CH * $rng.NextDouble() / $gr) * $gr
                 $segs = 3 + $rng.Next(5)
@@ -250,10 +268,10 @@ function Invoke-BrandArt {
         }
         'Triangles' {
             $g.SmoothingMode = 'None'
-            $tile = $u / 9; $cols = [int]($CW / $tile) + 2; $rows = [int]($CH / $tile) + 2
+            $tile = ($u / 9) * $sc; $cols = [int]($CW / $tile) + 2; $rows = [int]($CH / $tile) + 2
             $pal = @()
-            foreach ($t in 0.0, 0.25, 0.5, 0.75, 1.0) { $pal += New-SolidBrush (New-Alpha (Get-Mix $Drk $Pri $t) (30 + $rng.Next(50))) }
-            $pal += New-SolidBrush (New-Alpha $Sec 46); $pal += New-SolidBrush (New-Alpha $white 20)
+            foreach ($t in 0.0, 0.25, 0.5, 0.75, 1.0) { $pal += New-SolidBrush (New-AlphaK (Get-Mix $Drk $Pri $t) (30 + $rng.Next(50))) }
+            $pal += New-SolidBrush (New-AlphaK $Sec 46); $pal += New-SolidBrush (New-AlphaK $white 20)
             for ($rr = 0; $rr -lt $rows; $rr++) {
                 for ($cc = 0; $cc -lt $cols; $cc++) {
                     $x0 = $cc * $tile; $y0 = $rr * $tile; $x1 = $x0 + $tile; $y1 = $y0 + $tile
@@ -274,11 +292,11 @@ function Invoke-BrandArt {
             while ($x -lt $CW) {
                 $wd = $u * (0.03 + 0.25 * $rng.NextDouble())
                 $col = if ($rng.Next(2)) { $Sec } else { $Pri }
-                $br = New-SolidBrush (New-Alpha $col (22 + $rng.Next(70)))
+                $br = New-SolidBrush (New-AlphaK $col (22 + $rng.Next(70)))
                 $g.FillPolygon($br, (New-Pts $x, $CH, ($x + $wd), $CH, ($x + $wd + $sl), 0, ($x + $sl), 0)); $br.Dispose()
                 $x += $wd + $u * (0.02 + 0.12 * $rng.NextDouble())
             }
-            $pen = New-Object System.Drawing.Pen((New-Alpha $white 60), [single]([Math]::Max(1.5, $u * 0.004)))
+            $pen = New-Object System.Drawing.Pen((New-AlphaK $white 60), [single]([Math]::Max(1.5, $u * 0.004)))
             for ($i = 0; $i -lt 4; $i++) { $x = $CW * $rng.NextDouble(); Add-Ln $g $pen $x $CH ($x + $sl) 0 }
             $pen.Dispose()
         }
@@ -289,9 +307,9 @@ function Invoke-BrandArt {
             $sb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($PF::new([single]$scx, [single]($hz - 2.2 * $sr)), $PF::new([single]$scx, [single]$hz), $Sec, $Pri)
             Add-FillOval $g $sb ($scx - $sr) ($hz - 1.7 * $sr) (2 * $sr) (2 * $sr)
             $g.ResetClip(); $sb.Dispose()
-            $fl = New-SolidBrush (New-Alpha $Drk 190)
+            $fl = New-SolidBrush (New-AlphaK $Drk 190)
             $g.FillRectangle($fl, [single]0, [single]$hz, [single]$CW, [single]($CH - $hz)); $fl.Dispose()
-            $pen = New-Object System.Drawing.Pen((New-Alpha $Sec 125), [single]([Math]::Max(1, $u * 0.003)))
+            $pen = New-Object System.Drawing.Pen((New-AlphaK $Sec 125), [single]([Math]::Max(1, $u * 0.003)))
             for ($i = -16; $i -le 16; $i++) { Add-Ln $g $pen ($CW / 2 + $i * $CW * 0.012) $hz ($CW / 2 + $i * $CW * 0.12) $CH }
             for ($k = 1; $k -le 12; $k++) { $t = $k / 12.0; $y = $hz + ($CH - $hz) * $t * $t; Add-Ln $g $pen 0 $y $CW $y }
             Add-Ln $g $pen 0 $hz $CW $hz
@@ -299,10 +317,10 @@ function Invoke-BrandArt {
         }
         'Bokeh' {
             for ($i = 0; $i -lt 48; $i++) {
-                $r = $u * (0.015 + 0.10 * $rng.NextDouble()); $x = $CW * $rng.NextDouble(); $y = $CH * $rng.NextDouble()
+                $r = $u * (0.015 + 0.10 * $rng.NextDouble()) * $sc; $x = $CW * $rng.NextDouble(); $y = $CH * $rng.NextDouble()
                 $col = @($white, $Pri, $Sec)[$rng.Next(3)]
-                $br = New-SolidBrush (New-Alpha $col (14 + $rng.Next(46)))
-                $pen = New-Object System.Drawing.Pen((New-Alpha $col 55), [single]([Math]::Max(1, $u * 0.002)))
+                $br = New-SolidBrush (New-AlphaK $col (14 + $rng.Next(46)))
+                $pen = New-Object System.Drawing.Pen((New-AlphaK $col 55), [single]([Math]::Max(1, $u * 0.002)))
                 Add-FillOval $g $br ($x - $r) ($y - $r) (2 * $r) (2 * $r); Add-DrawOval $g $pen ($x - $r) ($y - $r) (2 * $r) (2 * $r)
                 $br.Dispose(); $pen.Dispose()
             }
@@ -313,15 +331,15 @@ function Invoke-BrandArt {
             for ($i = 0; $i -lt $n; $i++) {
                 $wv = 0.03 + 0.09 * $rng.NextDouble()
                 $col = @($white, $Sec, $Pri)[$rng.Next(3)]
-                $br = New-SolidBrush (New-Alpha $col (10 + $rng.Next(34)))
+                $br = New-SolidBrush (New-AlphaK $col (10 + $rng.Next(34)))
                 $g.FillPolygon($br, (New-Pts $cx, $cy, ($cx + $len * [Math]::Cos($a)), ($cy + $len * [Math]::Sin($a)), ($cx + $len * [Math]::Cos($a + $wv)), ($cy + $len * [Math]::Sin($a + $wv))))
                 $br.Dispose(); $a += 6.28 / $n
             }
             Add-Glow $g $cx $cy ($u * 0.5) $white 70
         }
         'Dots' {
-            $sp = $u / 30; $fx = $CW * $rng.NextDouble(); $fy = $CH * $rng.NextDouble(); $maxd = [Math]::Sqrt($CW * $CW + $CH * $CH)
-            $bw = New-SolidBrush (New-Alpha $white 70); $bs = New-SolidBrush (New-Alpha $Sec 110)
+            $sp = ($u / 30) * [Math]::Max(0.9, $sc); $fx = $CW * $rng.NextDouble(); $fy = $CH * $rng.NextDouble(); $maxd = [Math]::Sqrt($CW * $CW + $CH * $CH)
+            $bw = New-SolidBrush (New-AlphaK $white 70); $bs = New-SolidBrush (New-AlphaK $Sec 110)
             $nx = [int]($CW / $sp) + 1; $ny = [int]($CH / $sp) + 1
             for ($i = 0; $i -lt $nx; $i++) {
                 for ($j = 0; $j -lt $ny; $j++) {
@@ -341,7 +359,7 @@ function Invoke-BrandArt {
             for ($i = 0; $i -lt $n; $i++) {
                 $x = $i * $step - $step * 0.3
                 $col = if ($i % 2) { $Sec } else { $Pri }
-                $br = New-SolidBrush (New-Alpha $col (26 + $i * 7))
+                $br = New-SolidBrush (New-AlphaK $col (26 + $i * 7))
                 $g.FillPolygon($br, (New-Pts $x, 0, ($x + $dep), ($CH / 2), $x, $CH, ($x + $th), $CH, ($x + $dep + $th), ($CH / 2), ($x + $th), 0)); $br.Dispose()
             }
         }
@@ -359,21 +377,44 @@ function New-BrandBitmap {
         $vi  = Get-VariantInfo $Brand $Variant $Mode
         $rng = New-Object System.Random (Get-BrandSeed $Brand.Name $Variant $(if ($Mode -eq 'Lock') { 1 } else { 0 }))
 
-        # background by palette
+        # background by palette (6 different looks)
+        $script:ArtK = 1.0
         $rect = New-Object System.Drawing.Rectangle(0, 0, $Width, $Height)
         $angle = [single](20 + $rng.Next(60))
+        $LGB = 'System.Drawing.Drawing2D.LinearGradientBrush'
+        $grad = $null
         switch ($vi.Palette) {
-            0 { $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $drk, $pri, $angle) }
-            1 { $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $pri, $drk, $angle) }
-            2 { $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $drk, (Get-Mix $drk $pri 0.2), $angle) }
+            0 { $grad = New-Object -TypeName $LGB -ArgumentList $rect, $drk, $pri, $angle }
+            1 { $grad = New-Object -TypeName $LGB -ArgumentList $rect, $pri, $drk, $angle }
+            2 { $grad = New-Object -TypeName $LGB -ArgumentList $rect, $drk, (Get-Mix $drk $pri 0.2), $angle }
+            3 { $grad = New-Object -TypeName $LGB -ArgumentList $rect, (Get-Mix $pri $drk 0.3), $sec, $angle }
+            5 {
+                $grad = New-Object -TypeName $LGB -ArgumentList $rect, $drk, $pri, $angle
+                $cb = New-Object System.Drawing.Drawing2D.ColorBlend(3)
+                $cb.Colors = [System.Drawing.Color[]]@($drk, $pri, $sec)
+                $cb.Positions = [single[]]@(0, 0.55, 1)
+                $grad.InterpolationColors = $cb
+            }
         }
-        $g.FillRectangle($grad, $rect); $grad.Dispose()
+        if ($vi.Palette -eq 4) {
+            $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+            $gp.AddRectangle($rect)
+            $spot = New-Object System.Drawing.Drawing2D.PathGradientBrush($gp)
+            $spot.CenterPoint = [System.Drawing.PointF]::new([single]($Width * (0.25 + 0.5 * $rng.NextDouble())), [single]($Height * (0.2 + 0.5 * $rng.NextDouble())))
+            $spot.CenterColor = Get-Mix $pri $sec 0.35
+            $spot.SurroundColors = [System.Drawing.Color[]]@($drk)
+            $g.FillRectangle($spot, $rect); $spot.Dispose(); $gp.Dispose()
+        } else {
+            $g.FillRectangle($grad, $rect); $grad.Dispose()
+        }
         if ($vi.Palette -eq 2) {
             Add-Glow $g ($Width * 0.25) ($Height * 0.3) ($Height * 0.9) $pri 120
             Add-Glow $g ($Width * 0.8) ($Height * 0.8) ($Height * 0.8) $sec 70
-        } else {
+        } elseif ($vi.Palette -ne 4) {
             Add-Glow $g ($Width * 0.12) ($Height * 0.05) ($Height * 0.8) ([System.Drawing.Color]::White) 40
         }
+
+        $script:ArtK = 1.7      # bolder artwork so styles are easy to tell apart
 
         Invoke-BrandArt $g $Width $Height $vi.Style $rng $pri $sec $drk
 
@@ -645,12 +686,13 @@ function Read-Settings {
 function Write-Settings { $script:Settings | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8 }
 
 function Read-State {
-    $s = @{ Registry = @{}; StartFolders = @() }
+    $s = @{ Registry = @{}; StartFolders = @(); CreatedKeys = @() }
     if (Test-Path -LiteralPath $script:StatePath) {
         try {
             $j = Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json
             foreach ($p in $j.Registry.PSObject.Properties) { $s.Registry[$p.Name] = @{ Value = $p.Value.Value; Kind = $p.Value.Kind } }
             $s.StartFolders = @($j.StartFolders | Where-Object { $_ })
+            $s.CreatedKeys = @($j.CreatedKeys | Where-Object { $_ })
         } catch { }
     }
     $s
@@ -679,7 +721,15 @@ function Save-RegBackup([string]$Path, [string]$Name) {
 function Set-Reg {
     param([string]$Path, [string]$Name, $Value, [string]$Type = 'String')
     Save-RegBackup $Path $Name
-    if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force | Out-Null }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        # remember every key we create, so Restore can remove it again
+        $p = $Path
+        while ($p -and -not (Test-Path -LiteralPath $p)) {
+            if ($script:State.CreatedKeys -notcontains $p) { $script:State.CreatedKeys += $p }
+            $p = Split-Path -Path $p -Parent
+        }
+        New-Item -Path $Path -Force | Out-Null
+    }
     New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
 }
 
@@ -716,16 +766,40 @@ function Restore-Registry {
             }
         }
     }
+    foreach ($kp in @($script:State.CreatedKeys | Sort-Object { $_.Length } -Descending)) {
+        if (Test-Path -LiteralPath $kp) {
+            $it = Get-Item -LiteralPath $kp
+            if ($it.ValueCount -eq 0 -and $it.SubKeyCount -eq 0) { Remove-Item -LiteralPath $kp -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    $script:State.CreatedKeys = @()
     $script:State.Registry = @{}
 }
 
 # ------------------------------------------------------------------ theme actions
-function Update-ShellIcons {
+function Update-ShellIcons([switch]$RestartExplorer) {
+    $ie4 = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+    try { Start-Process -FilePath $ie4 -ArgumentList '-ClearIconCache' -WindowStyle Hidden -Wait } catch { }
     [BrandyNative]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     $r = [UIntPtr]::Zero
     [void][BrandyNative]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$r)
-    foreach ($a in '-ClearIconCache', '-show') {
-        try { Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -ArgumentList $a -WindowStyle Hidden -Wait } catch { }
+    if ($RestartExplorer) {
+        # Windows only reads the icon settings again when Explorer starts, so restart it (it comes back by itself)
+        Write-Log 'Refreshing icons - the taskbar will blink for a moment...'
+        try {
+            Get-Process -Name explorer -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 700
+            $cache = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer'
+            Get-ChildItem -LiteralPath $cache -Filter 'iconcache*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'IconCache.db') -Force -ErrorAction SilentlyContinue
+            $deadline = (Get-Date).AddSeconds(8)
+            do { Start-Sleep -Milliseconds 500 } until ((Get-Process -Name explorer -ErrorAction SilentlyContinue) -or ((Get-Date) -gt $deadline))
+            if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
+            Start-Sleep -Milliseconds 1200
+            try { Start-Process -FilePath $ie4 -ArgumentList '-show' -WindowStyle Hidden -Wait } catch { }
+        } catch { }
+    } else {
+        try { Start-Process -FilePath $ie4 -ArgumentList '-show' -WindowStyle Hidden -Wait } catch { }
     }
 }
 
@@ -810,9 +884,21 @@ function Build-BrandIcons($Brand) {
 }
 
 function Set-ShellIcons($Icons) {
+    # Part 1: generic icons used everywhere in Explorer, file dialogs and apps (all users)
     $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Icons'
-    $map = @{ '0' = 'File'; '2' = 'App'; '3' = 'Folder'; '4' = 'FolderOpen'; '7' = 'Drive'; '8' = 'Drive'; '11' = 'Disc' }
+    $map = @{ '0' = 'File'; '1' = 'File'; '2' = 'App'; '3' = 'Folder'; '4' = 'FolderOpen'; '7' = 'Drive'; '8' = 'Drive'; '9' = 'Network'; '10' = 'Network'; '11' = 'Disc' }
     foreach ($idx in $map.Keys) { Set-Reg $key $idx ("{0},0" -f $Icons[$map[$idx]]) 'String' }
+    # Part 2: folder classes (some Windows builds read these instead)
+    foreach ($cls in 'Folder', 'Directory') {
+        Set-Reg "HKCU:\Software\Classes\$cls\DefaultIcon" '(default)' ("{0},0" -f $Icons['Folder']) 'String'
+    }
+    # Part 3: every drive letter (C:, D:, USB sticks, DVD, network drives)
+    $driveKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons'
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+        $letter = $d.Name.Substring(0, 1).ToUpper()
+        $kind = switch ($d.DriveType.ToString()) { 'CDRom' { 'Disc' } 'Network' { 'Network' } default { 'Drive' } }
+        Set-Reg "$driveKey\$letter\DefaultIcon" '(default)' ("{0},0" -f $Icons[$kind]) 'String'
+    }
 }
 
 function Set-DesktopIcons($Icons) {
@@ -861,7 +947,7 @@ function Restore-All {
     $wp = (Get-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -ErrorAction SilentlyContinue).Wallpaper
     if ($wp) { [void][BrandyNative]::SystemParametersInfo(20, 0, $wp, 3) }
     Write-State
-    Update-ShellIcons
+    Update-ShellIcons -RestartExplorer
     Write-Log 'Restored. Sign out and back in to finish.'
 }
 
@@ -1388,7 +1474,7 @@ function Invoke-Apply {
             if ($script:swStart.IsChecked) { Invoke-Step 'Start menu icons' { Set-StartFolderIcons $icons } }
         }
         Write-State
-        Invoke-Step 'Refresh' { Update-ShellIcons }
+        Invoke-Step 'Refresh' { Update-ShellIcons -RestartExplorer:([bool]$icons) }
         if ($script:Fails -gt 0) { Write-Log "Finished with $($script:Fails) issue(s). See ••• > Activity log." }
         else { Write-Log 'Applied. Sign out and back in to see everything.' }
     } finally { Set-Busy $false }
