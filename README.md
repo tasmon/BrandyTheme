@@ -6,14 +6,10 @@ GeForce, Radeon, Razer, Alienware, Gigabyte, Logitech, Corsair, Sony, LG, Toshib
 Qualcomm, Snapdragon, Canon, Epson, Western Digital, Seagate, Kingston, ThinkPad, ROG, Legion, Predator,
 Xbox, Surface and PlayStation.
 
----
-
-  <img src="docs/screenshot-1.png" alt="BrandyTheme" width="80%">
-
----
-  <img src="docs/screenshot-2.png" alt="BrandyTheme" width="80%">
-
----
+<p align="center">
+  <img src="docs/screenshot-1.png" alt="BrandyTheme - choose a brand and preview wallpapers" width="49%">
+  <img src="docs/screenshot-2.png" alt="BrandyTheme - lock screens, icons and options" width="49%">
+</p>
 
 ## Install / update / uninstall
 
@@ -34,11 +30,15 @@ list, so a brand's wallpaper and lock screen never match.
 
 ## Icons
 
-**System icons** change, for every user: the generic file, folder, open-folder, application, drive,
-network and disc icons, and the icon of every drive letter (C:, D:, USB, DVD...). **Desktop icons**
+**System icons** change, for every user: the generic file, folder, open-folder, application, drive, network
+and disc icons, plus the icon of every drive letter (C:, D:, USB, DVD...). **Your folders** - Desktop,
+Documents, Downloads, Music, Pictures and Videos - get their own themed icons. **Desktop icons**
 (This PC, Recycle Bin, Network, User Files, Control Panel) and **Start menu icons** (program folders) are
 themed too. After applying, Explorer restarts for a moment so Windows reloads its icons.
-Apps keep their own icons - they are part of each program and Windows does not let them be replaced.
+
+Windows keeps a few things on its own icons and does not allow them to be replaced safely: the built-in
+system folders (Program Files, Windows, Users, ProgramData), the Settings app, and the icon of each
+installed app (it belongs to the program). Everything else follows the theme.
 
 ## Updates (version.txt)
 
@@ -46,7 +46,7 @@ Keep these two files in the root of the `main` branch of github.com/tasmon/Brand
 
 | File | Content |
 |---|---|
-| `version.txt` | the latest version on the first line, e.g. `1.4.3` |
+| `version.txt` | the latest version on the first line, e.g. `1.5.1` |
 | `BrandyTheme.ps1` | the latest script |
 
 To release: raise `$script:AppVersion` in `BrandyTheme.ps1`, put the same number in `version.txt`, commit and

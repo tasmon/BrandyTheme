@@ -30,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ metadata
 $script:AppName     = 'BrandyTheme'
-$script:AppVersion  = '1.4.2'
+$script:AppVersion  = '1.5.0'
 $script:Author      = 'Tasmon Islam'
 $script:Email       = 'tasmon@outlook.com'
 $script:GitHubOwner = 'tasmon'
@@ -444,6 +444,45 @@ function New-BrandIconBitmap {
     $glass = [System.Drawing.Color]::FromArgb(70, 255, 255, 255)
     $PF = [System.Drawing.PointF]
 
+    if ('Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'Videos' -contains $Kind) {
+        $g.FillPath((New-SolidBrush $deep), (New-RoundRect 20 46 112 56 12))
+        $fb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($PF::new(0, 80), $PF::new(0, 236), $light, $p)
+        $g.FillPath($fb, (New-RoundRect 16 80 224 156 18))
+        $wb = New-SolidBrush ([System.Drawing.Color]::FromArgb(240, 255, 255, 255))
+        $pb = New-SolidBrush $p
+        switch ($Kind) {
+            'Documents' {
+                $g.FillPolygon($wb, (New-Pts 100, 112, 142, 112, 162, 132, 162, 204, 100, 204))
+                foreach ($row in @(@(150, 40), @(166, 46), @(182, 34))) { $g.FillRectangle($pb, 112, $row[0], $row[1], 6) }
+            }
+            'Downloads' {
+                $g.FillRectangle($wb, 118, 108, 20, 46)
+                $g.FillPolygon($wb, (New-Pts 90, 150, 166, 150, 128, 190))
+                $g.FillPath($wb, (New-RoundRect 92 198 72 10 4))
+            }
+            'Music' {
+                $g.FillEllipse($wb, 96, 168, 36, 28)
+                $g.FillRectangle($wb, 124, 116, 9, 60)
+                $g.FillPolygon($wb, (New-Pts 133, 116, 168, 130, 168, 150, 133, 138))
+            }
+            'Pictures' {
+                $g.FillPath($wb, (New-RoundRect 90 116 76 70 8))
+                $g.FillPolygon($pb, (New-Pts 98, 178, 120, 148, 134, 166, 144, 154, 158, 178))
+                $g.FillEllipse($pb, 140, 124, 14, 14)
+            }
+            'Videos' {
+                $g.FillPath($wb, (New-RoundRect 90 118 76 62 10))
+                $g.FillPolygon($pb, (New-Pts 118, 130, 118, 168, 148, 149))
+            }
+            'Desktop' {
+                $g.FillPath($wb, (New-RoundRect 90 116 76 52 8))
+                $g.FillRectangle($pb, 97, 123, 62, 38)
+                $g.FillRectangle($wb, 120, 168, 16, 10)
+                $g.FillPath($wb, (New-RoundRect 106 177 44 8 4))
+            }
+        }
+        $Kind = 'Done'
+    }
     switch ($Kind) {
         'Folder' {
             $g.FillPath((New-SolidBrush $deep), (New-RoundRect 20 46 112 56 12))
@@ -588,10 +627,51 @@ function Save-Ico($Bitmap, [string]$Path) {
     $bw.Close(); $fs.Close()
 }
 
+# Classic .ico (uncompressed 32-bit images). The C# compiler can embed this format in BrandyTheme.exe;
+# PNG-compressed icons are rejected by it, which is why the launcher used to have no icon.
+function Save-IcoDib($Bitmap, [string]$Path) {
+    $sizes = 16, 24, 32, 48, 64
+    $imgs = @()
+    foreach ($s in $sizes) {
+        $b = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $g = [System.Drawing.Graphics]::FromImage($b)
+        $g.InterpolationMode = 'HighQualityBicubic'; $g.SmoothingMode = 'HighQuality'; $g.PixelOffsetMode = 'HighQuality'
+        $g.DrawImage($Bitmap, 0, 0, $s, $s); $g.Dispose()
+        $rect = New-Object System.Drawing.Rectangle(0, 0, $s, $s)
+        $data = $b.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $stride = $data.Stride
+        $buf = New-Object byte[] ($stride * $s)
+        [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $buf, 0, $buf.Length)
+        $b.UnlockBits($data); $b.Dispose()
+        $maskStride = [int]([Math]::Ceiling($s / 32.0) * 4)
+        $ms = New-Object System.IO.MemoryStream
+        $bw = New-Object System.IO.BinaryWriter($ms)
+        $bw.Write([uint32]40); $bw.Write([int32]$s); $bw.Write([int32]($s * 2)); $bw.Write([uint16]1); $bw.Write([uint16]32)
+        $bw.Write([uint32]0); $bw.Write([uint32]($s * $s * 4 + $maskStride * $s)); $bw.Write([int32]0); $bw.Write([int32]0)
+        $bw.Write([uint32]0); $bw.Write([uint32]0)
+        for ($y = $s - 1; $y -ge 0; $y--) { $bw.Write($buf, $y * $stride, $s * 4) }
+        $bw.Write((New-Object byte[] ($maskStride * $s)))
+        $bw.Flush(); $imgs += , $ms.ToArray(); $ms.Dispose()
+    }
+    $fs = [System.IO.File]::Create($Path)
+    $w = New-Object System.IO.BinaryWriter($fs)
+    $w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]$sizes.Count)
+    $offset = 6 + 16 * $sizes.Count
+    for ($i = 0; $i -lt $sizes.Count; $i++) {
+        $w.Write([byte]$sizes[$i]); $w.Write([byte]$sizes[$i]); $w.Write([byte]0); $w.Write([byte]0)
+        $w.Write([uint16]1); $w.Write([uint16]32)
+        $w.Write([uint32]$imgs[$i].Length); $w.Write([uint32]$offset)
+        $offset += $imgs[$i].Length
+    }
+    foreach ($img in $imgs) { $w.Write([byte[]]$img) }
+    $w.Close(); $fs.Close()
+}
+
 # -------- installer helper mode: export the app icon and quit (no elevation needed)
 if ($ExportAppIcon) {
     $bmp = New-AppIconBitmap 256
     Save-Ico $bmp $script:IconPath
+    Save-IcoDib $bmp (Join-Path $script:DataDir 'BrandyThemeExe.ico')
     $bmp.Dispose()
     exit 0
 }
@@ -632,6 +712,8 @@ public class BrandyNative {
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+    [DllImport("user32.dll", EntryPoint = "SendMessage")]
+    public static extern IntPtr SendMessageHandle(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 }
 '@
 }
@@ -692,13 +774,14 @@ function Read-Settings {
 function Write-Settings { $script:Settings | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8 }
 
 function Read-State {
-    $s = @{ Registry = @{}; StartFolders = @(); CreatedKeys = @() }
+    $s = @{ Registry = @{}; StartFolders = @(); CreatedKeys = @(); KnownFolders = @{} }
     if (Test-Path -LiteralPath $script:StatePath) {
         try {
             $j = Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json
             foreach ($p in $j.Registry.PSObject.Properties) { $s.Registry[$p.Name] = @{ Value = $p.Value.Value; Kind = $p.Value.Kind } }
             $s.StartFolders = @($j.StartFolders | Where-Object { $_ })
             $s.CreatedKeys = @($j.CreatedKeys | Where-Object { $_ })
+            if ($j.KnownFolders) { foreach ($p in $j.KnownFolders.PSObject.Properties) { $s.KnownFolders[$p.Name] = $p.Value } }
         } catch { }
     }
     $s
@@ -884,7 +967,7 @@ function Build-BrandIcons($Brand) {
     $dir = Join-Path $script:DataDir ("Icons\{0}-v{1}" -f $Brand.Name, $script:AppVersion)
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $set = @{}
-    foreach ($kind in 'Folder', 'FolderOpen', 'File', 'App', 'Drive', 'Disc', 'Pc', 'Recycle', 'RecycleFull', 'Network', 'User', 'Control') {
+    foreach ($kind in 'Folder', 'FolderOpen', 'File', 'App', 'Drive', 'Disc', 'Pc', 'Recycle', 'RecycleFull', 'Network', 'User', 'Control', 'Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'Videos') {
         $path = Join-Path $dir ($kind.ToLower() + '.ico')
         if (-not (Test-Path -LiteralPath $path)) {
             $bmp = New-BrandIconBitmap $kind $Brand 256
@@ -911,6 +994,45 @@ function Set-ShellIcons($Icons) {
         $letter = $d.Name.Substring(0, 1).ToUpper()
         $kind = switch ($d.DriveType.ToString()) { 'CDRom' { 'Disc' } 'Network' { 'Network' } default { 'Drive' } }
         Set-Reg "$driveKey\$letter\DefaultIcon" '(default)' ("{0},0" -f $Icons[$kind]) 'String'
+    }
+}
+
+# Your own folders (Desktop, Documents, Downloads, Music, Pictures, Videos) keep their icon in a desktop.ini
+# inside the folder - those are changed (original text is saved so Restore can put it back).
+$script:KnownFolderMap = [ordered]@{
+    Desktop = 'Desktop'; Documents = 'Personal'; Downloads = '{374DE290-123F-4565-9164-39C4925E467B}'
+    Music = 'My Music'; Pictures = 'My Pictures'; Videos = 'My Video'
+}
+
+function Get-UserFolderPath([string]$ValueName) {
+    $k = Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $v = $k.GetValue($ValueName, $null, 'DoNotExpandEnvironmentNames')
+    if ($v) { [Environment]::ExpandEnvironmentVariables([string]$v) }
+}
+
+function Set-KnownFolderIcons($Icons) {
+    foreach ($kind in $script:KnownFolderMap.Keys) {
+        try {
+            $dir = Get-UserFolderPath $script:KnownFolderMap[$kind]
+            if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+            $ini = Join-Path $dir 'desktop.ini'
+            $orig = $null
+            if ([System.IO.File]::Exists($ini)) { $orig = [System.IO.File]::ReadAllText($ini); [System.IO.File]::SetAttributes($ini, [System.IO.FileAttributes]::Normal) }
+            if (-not $script:State.KnownFolders.ContainsKey($ini)) { $script:State.KnownFolders[$ini] = $orig }
+            $text = $orig
+            if ($null -eq $text -or $text.Trim() -eq '') { $text = "[.ShellClassInfo]`r`n" }
+            $out = New-Object 'System.Collections.Generic.List[string]'
+            $placed = $false
+            foreach ($l in ($text -split "`r?`n")) {
+                if ($l.Trim() -eq '' -or $l -match '^\s*(IconResource|IconFile|IconIndex)\s*=') { continue }
+                $out.Add($l)
+                if (-not $placed -and $l.Trim() -ieq '[.ShellClassInfo]') { $out.Add("IconResource=$($Icons[$kind]),0"); $placed = $true }
+            }
+            if (-not $placed) { $out.Insert(0, '[.ShellClassInfo]'); $out.Insert(1, "IconResource=$($Icons[$kind]),0") }
+            [System.IO.File]::WriteAllText($ini, (($out -join "`r`n") + "`r`n"), [System.Text.Encoding]::Unicode)
+            [System.IO.File]::SetAttributes($ini, [System.IO.FileAttributes]'Hidden,System')
+            & attrib.exe +r "$dir" | Out-Null
+        } catch { Write-Log "$kind folder icon skipped: $($_.Exception.Message)" }
     }
 }
 
@@ -956,6 +1078,18 @@ function Restore-All {
             } catch { }
         }
     }
+    foreach ($ini in @($script:State.KnownFolders.Keys)) {
+        $orig = $script:State.KnownFolders[$ini]
+        try {
+            if ([System.IO.File]::Exists($ini)) { [System.IO.File]::SetAttributes($ini, [System.IO.FileAttributes]::Normal) }
+            if ($null -eq $orig) { Remove-Item -LiteralPath $ini -Force -ErrorAction SilentlyContinue }
+            else {
+                [System.IO.File]::WriteAllText($ini, [string]$orig, [System.Text.Encoding]::Unicode)
+                [System.IO.File]::SetAttributes($ini, [System.IO.FileAttributes]'Hidden,System')
+            }
+        } catch { }
+    }
+    $script:State.KnownFolders = @{}
     $script:State.StartFolders = @()
     $wp = (Get-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -ErrorAction SilentlyContinue).Wallpaper
     if ($wp) { [void][BrandyNative]::SystemParametersInfo(20, 0, $wp, 3) }
@@ -986,7 +1120,7 @@ function Invoke-ApplyJob([string]$Path) {
     elseif ($job.DoDark) { Invoke-JobStep 'Dark mode' { Set-DarkModeOnly } }
     if ($icons) {
         Write-Log 'Applying icons...'
-        if ($job.DoIcons) { Invoke-JobStep 'System icons'     { Set-ShellIcons $icons } }
+        if ($job.DoIcons) { Invoke-JobStep 'System icons'     { Set-ShellIcons $icons } ; Invoke-JobStep 'Your folders' { Set-KnownFolderIcons $icons } }
         if ($job.DoDesk)  { Invoke-JobStep 'Desktop icons'    { Set-DesktopIcons $icons } }
         if ($job.DoStart) { Invoke-JobStep 'Start menu icons' { Set-StartFolderIcons $icons } }
     }
@@ -1025,6 +1159,16 @@ function ConvertTo-MediaColor([System.Drawing.Color]$C) { [System.Windows.Media.
 # let the UI repaint / answer clicks while we wait
 function Update-UI {
     try { [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]{ }) } catch { }
+}
+
+# the taskbar button and the title bar use these two icons (WM_SETICON: 1 = big, 0 = small)
+function Set-WindowIcons {
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper($script:win)).Handle
+        if ($h -eq [IntPtr]::Zero) { return }
+        [void][BrandyNative]::SendMessageHandle($h, 0x80, [IntPtr]1, $script:hIconBig)
+        [void][BrandyNative]::SendMessageHandle($h, 0x80, [IntPtr]0, $script:hIconSmall)
+    } catch { }
 }
 
 # dark title bar that blends into the window
@@ -1711,6 +1855,8 @@ try {
     $logoBmp = New-AppIconBitmap 256
     $logoSrc = ConvertTo-BitmapSource $logoBmp; $logoBmp.Dispose()
     $win.Icon = $logoSrc
+    $iconBig = New-AppIconBitmap 64; $script:hIconBig = $iconBig.GetHicon(); $iconBig.Dispose()
+    $iconSmall = New-AppIconBitmap 32; $script:hIconSmall = $iconSmall.GetHicon(); $iconSmall.Dispose()
     $win.FindName('LogoImg').Source = $logoSrc
     $win.FindName('VerText').Text = "Version $($script:AppVersion)"
 
@@ -1766,12 +1912,13 @@ try {
     # anything that still escapes a handler (layout/render errors) is reported here instead of crashing the process
     $win.Dispatcher.Add_UnhandledException({ param($s, $e) $e.Handled = $true; Write-AppError $e.Exception 'window' })
 
-    $win.Add_Loaded({ Write-Trace 'window loaded'; Invoke-Safe { Update-BrandList } 'load brands' })
+    $win.Add_Loaded({ Write-Trace 'window loaded'; Set-WindowIcons; Invoke-Safe { Update-BrandList } 'load brands' })
     $win.Add_ContentRendered({
         Invoke-Safe {
             if (-not $script:FirstRender) {
                 $script:FirstRender = $true
                 Write-Trace 'window shown'
+                Set-WindowIcons
                 if ($script:Settings.AutoUpdate -and -not $NoUpdateCheck) { Invoke-UpdateCheck $true }
             }
         } 'startup'

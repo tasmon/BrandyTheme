@@ -154,16 +154,19 @@ $LauncherManifest = @'
 </assembly>
 '@
 
-function New-Launcher([string]$Dir, [string]$IconFile) {
+function New-Launcher([string]$Dir, [string[]]$IconFiles) {
     $exe = Join-Path $Dir 'BrandyTheme.exe'
     if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force }
     $manifest = Join-Path $env:TEMP 'BrandyTheme.manifest'
     Set-Content -LiteralPath $manifest -Value $LauncherManifest -Encoding UTF8
     $refs = @('System.Windows.Forms', [psobject].Assembly.Location)
 
+    # try each icon file in turn (classic .ico first); the last attempt builds without an icon
     $attempts = @()
-    if (Test-Path -LiteralPath $IconFile) { $attempts += "/win32manifest:`"$manifest`" /win32icon:`"$IconFile`"" }
-    $attempts += "/win32manifest:`"$manifest`""          # retry without the embedded icon if the first build fails
+    foreach ($ico in $IconFiles) {
+        if ($ico -and (Test-Path -LiteralPath $ico)) { $attempts += "/win32manifest:`"$manifest`" /win32icon:`"$ico`"" }
+    }
+    $attempts += "/win32manifest:`"$manifest`""
 
     foreach ($opts in $attempts) {
         try {
@@ -200,12 +203,13 @@ try {
 
         $mainScript = Join-Path $InstallDir 'BrandyTheme.ps1'
         $iconFile   = Join-Path $DataDir 'BrandyTheme.ico'
+        $exeIcon    = Join-Path $DataDir 'BrandyThemeExe.ico'
         Start-Process -FilePath powershell.exe -Wait -WindowStyle Hidden `
             -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$mainScript`" -ExportAppIcon"
 
         Step 'Building launcher (BrandyTheme.exe)...'
         # build the launcher; fall back to a hidden powershell.exe shortcut if compiling is blocked
-        $exe = New-Launcher $InstallDir $iconFile
+        $exe = New-Launcher $InstallDir @($exeIcon, $iconFile)
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut($StartLink)
         if ($exe) {
@@ -217,7 +221,7 @@ try {
         }
         $lnk.WorkingDirectory = $InstallDir
         $lnk.Description = 'Branded wallpapers, lock screens and icon themes'
-        if (Test-Path -LiteralPath $iconFile) { $lnk.IconLocation = $iconFile }
+        if (Test-Path -LiteralPath $exeIcon) { $lnk.IconLocation = $exeIcon } elseif (Test-Path -LiteralPath $iconFile) { $lnk.IconLocation = $iconFile }
         $lnk.Save()
 
         Step 'Creating Start menu shortcut and registering the app...'
@@ -228,7 +232,7 @@ try {
             DisplayVersion  = $version
             Publisher       = 'Tasmon Islam'
             InstallLocation = $InstallDir
-            DisplayIcon     = $iconFile
+            DisplayIcon     = $(if (Test-Path -LiteralPath $exeIcon) { $exeIcon } else { $iconFile })
             URLInfoAbout    = 'https://github.com/tasmon/BrandyTheme'
             HelpLink        = 'mailto:tasmon@outlook.com'
             UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'Install-BrandyTheme.ps1')`" -Uninstall"
